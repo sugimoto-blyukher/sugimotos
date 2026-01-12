@@ -1,27 +1,28 @@
-/* kernel.ld */
-
-ENTRY(kernel_entry)         /* カーネルのエントリポイント */
-OUTPUT_ARCH(i386)           /* ターゲット: i386 */
+ENTRY(boot)
 
 SECTIONS {
-    . = 0x10000;            /* カーネルの開始アドレス */
+    . = 0x80200000;
 
-    .text : {
-        KEEP(*(.text.kernel_entry))  /* エントリポイントを保持 */
-        *(.text)                     /* 実行可能コード */
+    .text :{
+        KEEP(*(.text.boot));
+        *(.text .text.*);
     }
 
-    .rodata ALIGN(4) : {    /* 読み取り専用データ */
-        *(.rodata)          /* 定数データ */
+    .rodata : ALIGN(4) {
+        *(.rodata .rodata.*);
     }
 
-    .data ALIGN(4) : {      /* 初期化済みデータ */
-        *(.data)            /* グローバル変数 */
+    .data : ALIGN(4) {
+        *(.data .data.*);
     }
 
-    .bss ALIGN(4) : {       /* 未初期化データ */
-        *(.bss)             /* 未初期化変数 */
+    .bss : ALIGN(4) {
+        __bss = .;
+        *(.bss .bss.* .sbss .sbss.*);
+        __bss_end = .;
     }
 
-    __end = .;              /* カーネルの終了アドレス */
+    . = ALIGN(4);
+    . += 128 * 1024; /* 128KB */
+    __stack_top = .;
 }
