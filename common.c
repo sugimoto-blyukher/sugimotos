@@ -18,6 +18,19 @@ void *memset(void *buf, char c, size_t n) {
     return buf;
 }
 
+int strcmp(const char *s1, const char *s2) {
+    while (*s1 && *s2) {
+        if (*s1 != *s2) 
+            break;
+        s1++;
+        s2++;
+    }
+
+    return *(unsigned char *)s1 - *(unsigned char *)s2;
+}
+
+
+
 void printf(const char *fmt, ...) {
     va_list vargs;
     va_start(vargs, fmt);
