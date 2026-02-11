@@ -253,7 +253,7 @@ void yield(void) {
         return;
 
     __asm__ __volatile__(
-        "csrw sscratch"        "csrw sscratch, %[sscratch]\n"
+        "csrw sscratch, %[sscratch]\n"
         :
         : [sscratch] "r" ((uint32_t) &next->stack[sizeof(next->stack)])
     );
