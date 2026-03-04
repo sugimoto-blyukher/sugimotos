@@ -82,10 +82,12 @@ struct process {
     bool is_user;
     vaddr_t sp;
     vaddr_t user_stack_base;
+    paddr_t user_stack_paddr;
     uint32_t user_stack_pages;
     uint8_t stack[8192];
     bool has_trap_frame;
     uint32_t sepc;
+    uint32_t satp;
     struct trap_frame trap_frame;
     struct file_desc fds[FD_MAX];
 };
@@ -100,6 +102,7 @@ struct sbiret sbi_call(long arg0, long arg1, long arg2, long arg3, long arg4,
                        long arg5, long fid, long eid);
 void putchar(char ch);
 int getchar(void);
+void sbi_shutdown(void);
 
 void kernel_entry(void);
 void switch_context(uint32_t *prev_sp, uint32_t *next_sp);
@@ -112,6 +115,9 @@ int proc_exec(struct trap_frame *f, uint32_t entry_pc, uint32_t argv);
 void proc_exit(int status);
 int proc_wait(int *status_ptr);
 int proc_waitpid(int pid, int *status_ptr, int options);
+int proc_user_writable_ok(uint32_t addr, uint32_t len);
+int proc_user_cstr_ok(uint32_t addr, uint32_t max_len);
+int proc_user_exec_argv_ok(uint32_t argv_ptr, int *argc_out);
 void yield(void);
 
 void fs_init(void);
@@ -120,7 +126,13 @@ int fs_close(int fd);
 int fs_read(int fd, void *buf, uint32_t len);
 int fs_write(int fd, const void *buf, uint32_t len);
 int fs_unlink(const char *path);
+int fs_rename(const char *old_path, const char *new_path);
 int fs_listdir(char *buf, uint32_t len);
+
+void vm_init(void);
+uint32_t vm_kernel_satp(void);
+uint32_t vm_build_user_satp(vaddr_t user_stack_base, paddr_t user_stack_paddr, uint32_t user_stack_pages);
+void vm_activate(uint32_t satp_value);
 
 void kernel_main(void);
 void boot(void);

@@ -264,6 +264,25 @@ int fs_unlink(const char *path)
     return 0;
 }
 
+int fs_rename(const char *old_path, const char *new_path)
+{
+    char old_name[RAMFS_NAME_MAX];
+    char new_name[RAMFS_NAME_MAX];
+    if (normalize_name(old_path, old_name) < 0 || normalize_name(new_path, new_name) < 0)
+        return -1;
+    if (str_eq(old_name, new_name))
+        return 0;
+
+    int inode = find_inode_by_name(old_name);
+    if (inode < 0)
+        return -1;
+    if (find_inode_by_name(new_name) >= 0)
+        return -1;
+
+    str_copy(inodes[inode].name, new_name);
+    return 0;
+}
+
 int fs_listdir(char *buf, uint32_t len)
 {
     if (!buf || len == 0)

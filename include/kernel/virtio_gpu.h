@@ -4,6 +4,7 @@
 
 int virtio_gpu_init(void);
 int virtio_gpu_is_ready(void);
+int virtio_gpu_last_error(void);
 
 int virtio_gpu_width(void);
 int virtio_gpu_height(void);

@@ -33,6 +33,7 @@
 
 #define VI_DESC_F_WRITE 2
 #define VI_QNUM 32
+#define VI_MAX_DEVICES 4
 
 struct vi_desc {
     uint64_t addr;
@@ -58,29 +59,36 @@ struct vi_used {
     struct vi_used_elem ring[VI_QNUM];
 } __attribute__((packed));
 
-static struct vi_desc vi_desc[VI_QNUM] __attribute__((aligned(16)));
-static struct vi_avail vi_avail __attribute__((aligned(2)));
-static volatile struct vi_used vi_used __attribute__((aligned(4)));
-static struct virtio_input_event vi_events[VI_QNUM];
-static uint32_t vi_base;
-static uint16_t vi_last_used;
-static int vi_ready;
+struct vi_candidate {
+    uint32_t base;
+    int score;
+};
 
-static inline void vi_mmio_write(uint32_t off, uint32_t val)
+static struct vi_desc vi_desc[VI_MAX_DEVICES][VI_QNUM] __attribute__((aligned(16)));
+static struct vi_avail vi_avail[VI_MAX_DEVICES] __attribute__((aligned(2)));
+static volatile struct vi_used vi_used[VI_MAX_DEVICES] __attribute__((aligned(4)));
+static struct virtio_input_event vi_events[VI_MAX_DEVICES][VI_QNUM];
+
+static uint32_t vi_bases[VI_MAX_DEVICES];
+static uint16_t vi_last_used[VI_MAX_DEVICES];
+static int vi_dev_count;
+static int vi_rr_next;
+
+static inline void vi_mmio_write(uint32_t base, uint32_t off, uint32_t val)
 {
-    *(volatile uint32_t *) (vi_base + off) = val;
+    *(volatile uint32_t *) (base + off) = val;
 }
 
-static inline uint32_t vi_mmio_read(uint32_t off)
+static inline uint32_t vi_mmio_read(uint32_t base, uint32_t off)
 {
-    return *(volatile uint32_t *) (vi_base + off);
+    return *(volatile uint32_t *) (base + off);
 }
 
-static void vi_queue_push(uint16_t id)
+static void vi_queue_push(int dev, uint16_t id)
 {
-    vi_avail.ring[vi_avail.idx % VI_QNUM] = id;
+    vi_avail[dev].ring[vi_avail[dev].idx % VI_QNUM] = id;
     __sync_synchronize();
-    vi_avail.idx++;
+    vi_avail[dev].idx++;
 }
 
 static int vi_char_is_letter(char c)
@@ -123,9 +131,9 @@ static int vi_read_device_name(uint32_t base, char *name, int name_sz)
     for (int i = 0; i < name_sz; i++)
         name[i] = '\0';
 
-    *(volatile uint32_t *) (base + VI_MMIO_CONFIG_SEL) = 0x01;    // VIRTIO_INPUT_CFG_ID_NAME
-    *(volatile uint32_t *) (base + VI_MMIO_CONFIG_SUBSEL) = 0x00;
-    uint32_t size = *(volatile uint32_t *) (base + VI_MMIO_CONFIG_SIZE);
+    vi_mmio_write(base, VI_MMIO_CONFIG_SEL, 0x01); // VIRTIO_INPUT_CFG_ID_NAME
+    vi_mmio_write(base, VI_MMIO_CONFIG_SUBSEL, 0x00);
+    uint32_t size = vi_mmio_read(base, VI_MMIO_CONFIG_SIZE);
     if (size == 0)
         return -1;
     int n = (int) size;
@@ -142,91 +150,130 @@ static int vi_read_device_name(uint32_t base, char *name, int name_sz)
     return 0;
 }
 
-int virtio_input_init(void)
+static int vi_init_one_device(int dev, uint32_t base)
 {
-    vi_base = 0;
-    uint32_t fallback_base = 0;
-    for (int i = 0; i < VIRTIO_MMIO_SLOTS; i++) {
-        uint32_t base = VIRTIO_MMIO_BASE + i * VIRTIO_MMIO_STEP;
-        uint32_t magic = *(volatile uint32_t *) (base + VI_MMIO_MAGIC_VALUE);
-        uint32_t version = *(volatile uint32_t *) (base + VI_MMIO_VERSION);
-        uint32_t dev = *(volatile uint32_t *) (base + VI_MMIO_DEVICE_ID);
-        if (magic == 0x74726976 && (version == 1 || version == 2) && dev == 18) {
-            if (!fallback_base)
-                fallback_base = base;
-            char name[64];
-            if (vi_read_device_name(base, name, sizeof(name)) == 0) {
-                if (vi_name_contains_word(name, "mouse") || vi_name_contains_word(name, "tablet")) {
-                    vi_base = base;
-                    break;
-                }
-            }
-        }
-    }
-    if (!vi_base)
-        vi_base = fallback_base;
-    if (!vi_base)
+    vi_mmio_write(base, VI_MMIO_STATUS, 0);
+    vi_mmio_write(base, VI_MMIO_STATUS, VI_STATUS_ACKNOWLEDGE);
+    vi_mmio_write(base, VI_MMIO_STATUS, VI_STATUS_ACKNOWLEDGE | VI_STATUS_DRIVER);
+    vi_mmio_write(base, VI_MMIO_DEVICE_FEATURES_SEL, 0);
+    vi_mmio_write(base, VI_MMIO_DRIVER_FEATURES_SEL, 0);
+    vi_mmio_write(base, VI_MMIO_DRIVER_FEATURES, 0);
+    vi_mmio_write(base, VI_MMIO_STATUS, VI_STATUS_ACKNOWLEDGE | VI_STATUS_DRIVER | VI_STATUS_FEATURES_OK);
+
+    vi_mmio_write(base, VI_MMIO_QUEUE_SEL, 0);
+    if (vi_mmio_read(base, VI_MMIO_QUEUE_NUM_MAX) < VI_QNUM)
         return -1;
+    vi_mmio_write(base, VI_MMIO_QUEUE_NUM, VI_QNUM);
 
-    vi_mmio_write(VI_MMIO_STATUS, 0);
-    vi_mmio_write(VI_MMIO_STATUS, VI_STATUS_ACKNOWLEDGE);
-    vi_mmio_write(VI_MMIO_STATUS, VI_STATUS_ACKNOWLEDGE | VI_STATUS_DRIVER);
-    vi_mmio_write(VI_MMIO_DEVICE_FEATURES_SEL, 0);
-    vi_mmio_write(VI_MMIO_DRIVER_FEATURES_SEL, 0);
-    vi_mmio_write(VI_MMIO_DRIVER_FEATURES, 0);
-    vi_mmio_write(VI_MMIO_STATUS, VI_STATUS_ACKNOWLEDGE | VI_STATUS_DRIVER | VI_STATUS_FEATURES_OK);
-
-    vi_mmio_write(VI_MMIO_QUEUE_SEL, 0);
-    if (vi_mmio_read(VI_MMIO_QUEUE_NUM_MAX) < VI_QNUM)
-        return -1;
-    vi_mmio_write(VI_MMIO_QUEUE_NUM, VI_QNUM);
-
-    memset(vi_desc, 0, sizeof(vi_desc));
-    memset(&vi_avail, 0, sizeof(vi_avail));
-    memset((void *) &vi_used, 0, sizeof(vi_used));
-    memset(vi_events, 0, sizeof(vi_events));
+    memset(vi_desc[dev], 0, sizeof(vi_desc[dev]));
+    memset(&vi_avail[dev], 0, sizeof(vi_avail[dev]));
+    memset((void *) &vi_used[dev], 0, sizeof(vi_used[dev]));
+    memset(vi_events[dev], 0, sizeof(vi_events[dev]));
 
     for (int i = 0; i < VI_QNUM; i++) {
-        vi_desc[i].addr = (uint64_t) (uint32_t) &vi_events[i];
-        vi_desc[i].len = sizeof(struct virtio_input_event);
-        vi_desc[i].flags = VI_DESC_F_WRITE;
-        vi_desc[i].next = 0;
-        vi_queue_push((uint16_t) i);
+        vi_desc[dev][i].addr = (uint64_t) (uint32_t) &vi_events[dev][i];
+        vi_desc[dev][i].len = sizeof(struct virtio_input_event);
+        vi_desc[dev][i].flags = VI_DESC_F_WRITE;
+        vi_desc[dev][i].next = 0;
+        vi_queue_push(dev, (uint16_t) i);
     }
     __sync_synchronize();
 
-    vi_mmio_write(VI_MMIO_QUEUE_DESC_LOW, (uint32_t) (uint64_t) vi_desc);
-    vi_mmio_write(VI_MMIO_QUEUE_DESC_HIGH, 0);
-    vi_mmio_write(VI_MMIO_QUEUE_DRIVER_LOW, (uint32_t) (uint64_t) &vi_avail);
-    vi_mmio_write(VI_MMIO_QUEUE_DRIVER_HIGH, 0);
-    vi_mmio_write(VI_MMIO_QUEUE_DEVICE_LOW, (uint32_t) (uint64_t) &vi_used);
-    vi_mmio_write(VI_MMIO_QUEUE_DEVICE_HIGH, 0);
-    vi_mmio_write(VI_MMIO_QUEUE_READY, 1);
-    vi_mmio_write(VI_MMIO_QUEUE_NOTIFY, 0);
+    vi_mmio_write(base, VI_MMIO_QUEUE_DESC_LOW, (uint32_t) (uint64_t) vi_desc[dev]);
+    vi_mmio_write(base, VI_MMIO_QUEUE_DESC_HIGH, 0);
+    vi_mmio_write(base, VI_MMIO_QUEUE_DRIVER_LOW, (uint32_t) (uint64_t) &vi_avail[dev]);
+    vi_mmio_write(base, VI_MMIO_QUEUE_DRIVER_HIGH, 0);
+    vi_mmio_write(base, VI_MMIO_QUEUE_DEVICE_LOW, (uint32_t) (uint64_t) &vi_used[dev]);
+    vi_mmio_write(base, VI_MMIO_QUEUE_DEVICE_HIGH, 0);
+    vi_mmio_write(base, VI_MMIO_QUEUE_READY, 1);
+    vi_mmio_write(base, VI_MMIO_QUEUE_NOTIFY, 0);
 
-    vi_mmio_write(VI_MMIO_STATUS,
+    vi_mmio_write(base,
+                  VI_MMIO_STATUS,
                   VI_STATUS_ACKNOWLEDGE | VI_STATUS_DRIVER | VI_STATUS_FEATURES_OK | VI_STATUS_DRIVER_OK);
-    vi_last_used = 0;
-    vi_ready = 1;
+    vi_last_used[dev] = 0;
+    vi_bases[dev] = base;
     return 0;
+}
+
+int virtio_input_init(void)
+{
+    struct vi_candidate cand[VI_MAX_DEVICES];
+    int cand_count = 0;
+
+    memset(vi_bases, 0, sizeof(vi_bases));
+    memset(vi_last_used, 0, sizeof(vi_last_used));
+    vi_dev_count = 0;
+    vi_rr_next = 0;
+
+    for (int i = 0; i < VIRTIO_MMIO_SLOTS; i++) {
+        uint32_t base = VIRTIO_MMIO_BASE + i * VIRTIO_MMIO_STEP;
+        uint32_t magic = vi_mmio_read(base, VI_MMIO_MAGIC_VALUE);
+        uint32_t version = vi_mmio_read(base, VI_MMIO_VERSION);
+        uint32_t dev = vi_mmio_read(base, VI_MMIO_DEVICE_ID);
+        if (!(magic == 0x74726976 && (version == 1 || version == 2) && dev == 18))
+            continue;
+
+        int score = 2;
+        char name[64];
+        if (vi_read_device_name(base, name, sizeof(name)) == 0) {
+            if (vi_name_contains_word(name, "mouse") || vi_name_contains_word(name, "tablet"))
+                score = 0;
+            else if (vi_name_contains_word(name, "keyboard"))
+                score = 1;
+        }
+
+        if (cand_count < VI_MAX_DEVICES) {
+            cand[cand_count].base = base;
+            cand[cand_count].score = score;
+            cand_count++;
+        }
+    }
+
+    for (int i = 0; i < cand_count; i++) {
+        int best = i;
+        for (int j = i + 1; j < cand_count; j++) {
+            if (cand[j].score < cand[best].score)
+                best = j;
+        }
+        if (best != i) {
+            struct vi_candidate tmp = cand[i];
+            cand[i] = cand[best];
+            cand[best] = tmp;
+        }
+    }
+
+    for (int i = 0; i < cand_count && vi_dev_count < VI_MAX_DEVICES; i++) {
+        if (vi_init_one_device(vi_dev_count, cand[i].base) == 0)
+            vi_dev_count++;
+    }
+
+    return (vi_dev_count > 0) ? 0 : -1;
 }
 
 int virtio_input_next_event(struct virtio_input_event *ev)
 {
-    if (!vi_ready || !ev)
-        return 0;
-    if (vi_last_used == vi_used.idx)
+    if (!ev || vi_dev_count <= 0)
         return 0;
 
-    uint16_t slot = vi_last_used % VI_QNUM;
-    uint32_t id = vi_used.ring[slot].id;
-    vi_last_used++;
-    if (id >= VI_QNUM)
-        return 0;
+    for (int n = 0; n < vi_dev_count; n++) {
+        int dev = (vi_rr_next + n) % vi_dev_count;
+        if (vi_last_used[dev] == vi_used[dev].idx)
+            continue;
 
-    *ev = vi_events[id];
-    vi_queue_push((uint16_t) id);
-    __sync_synchronize();
-    vi_mmio_write(VI_MMIO_QUEUE_NOTIFY, 0);
-    return 1;
+        uint16_t slot = vi_last_used[dev] % VI_QNUM;
+        uint32_t id = vi_used[dev].ring[slot].id;
+        vi_last_used[dev]++;
+        if (id >= VI_QNUM)
+            continue;
+
+        *ev = vi_events[dev][id];
+        vi_queue_push(dev, (uint16_t) id);
+        __sync_synchronize();
+        vi_mmio_write(vi_bases[dev], VI_MMIO_QUEUE_NOTIFY, 0);
+        vi_rr_next = (dev + 1) % vi_dev_count;
+        return 1;
+    }
+
+    return 0;
 }

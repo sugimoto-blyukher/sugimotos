@@ -16,6 +16,21 @@
 #define SYS_WRITE 12
 #define SYS_UNLINK 13
 #define SYS_LISTDIR 14
+#define SYS_SHUTDOWN 15
+#define SYS_RENAME 16
+#define SYS_WMCTL 17
+
+#define WMCTL_CREATE 1
+#define WMCTL_SET_TEXT 2
+#define WMCTL_FOCUS 3
+#define WMCTL_RENDER 4
+#define WMCTL_POLL_MOUSE 5
+#define WMCTL_POLL_EVENT 6
+#define WMCTL_CURSOR_MOVE 7
+#define WMCTL_DRAG_BEGIN 8
+#define WMCTL_DRAG_END 9
+#define WMCTL_CLOSE 10
+#define WMCTL_SET_IMAGE 11
 
 #define WNOHANG 1
 

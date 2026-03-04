@@ -2,7 +2,7 @@
 
 #define VIRTIO_MMIO_BASE 0x10001000
 #define VIRTIO_MMIO_STEP 0x1000
-#define VIRTIO_MMIO_SLOTS 8
+#define VIRTIO_MMIO_SLOTS 32
 
 #define VG_MMIO_MAGIC_VALUE 0x000
 #define VG_MMIO_VERSION 0x004
@@ -154,6 +154,7 @@ static volatile struct vg_used vg_used __attribute__((aligned(4)));
 static uint32_t vg_base;
 static int vg_ready;
 static uint16_t vg_last_used;
+static int vg_last_error;
 
 static uint32_t vg_width_px;
 static uint32_t vg_height_px;
@@ -319,6 +320,7 @@ int virtio_gpu_init(void)
     if (vg_ready)
         return 0;
 
+    vg_last_error = 0;
     vg_base = 0;
     for (int i = 0; i < VIRTIO_MMIO_SLOTS; i++) {
         uint32_t base = VIRTIO_MMIO_BASE + i * VIRTIO_MMIO_STEP;
@@ -330,8 +332,10 @@ int virtio_gpu_init(void)
             break;
         }
     }
-    if (!vg_base)
+    if (!vg_base) {
+        vg_last_error = 1;
         return -1;
+    }
 
     vg_mmio_write(VG_MMIO_STATUS, 0);
     vg_mmio_write(VG_MMIO_STATUS, VG_STATUS_ACKNOWLEDGE);
@@ -342,8 +346,10 @@ int virtio_gpu_init(void)
     vg_mmio_write(VG_MMIO_STATUS, VG_STATUS_ACKNOWLEDGE | VG_STATUS_DRIVER | VG_STATUS_FEATURES_OK);
 
     vg_mmio_write(VG_MMIO_QUEUE_SEL, 0);
-    if (vg_mmio_read(VG_MMIO_QUEUE_NUM_MAX) < VG_QNUM)
+    if (vg_mmio_read(VG_MMIO_QUEUE_NUM_MAX) < VG_QNUM) {
+        vg_last_error = 2;
         return -1;
+    }
     vg_mmio_write(VG_MMIO_QUEUE_NUM, VG_QNUM);
 
     memset(vg_desc, 0, sizeof(vg_desc));
@@ -367,6 +373,7 @@ int virtio_gpu_init(void)
     memset(&dinfo, 0, sizeof(dinfo));
     if (vg_cmd_get_display_info(&dinfo) < 0) {
         vg_ready = 0;
+        vg_last_error = 3;
         return -1;
     }
 
@@ -396,27 +403,36 @@ int virtio_gpu_init(void)
     uint32_t bytes = vg_pitch_px * vg_height_px;
     if (vg_cmd_resource_create_2d(vg_resource_id, vg_width_px, vg_height_px) < 0) {
         vg_ready = 0;
+        vg_last_error = 4;
         return -1;
     }
     if (vg_cmd_resource_attach_backing(vg_resource_id, vg_backbuffer, bytes) < 0) {
         vg_cmd_resource_unref(vg_resource_id);
         vg_ready = 0;
+        vg_last_error = 5;
         return -1;
     }
     if (vg_cmd_set_scanout(vg_resource_id, vg_width_px, vg_height_px) < 0) {
         vg_cmd_resource_unref(vg_resource_id);
         vg_ready = 0;
+        vg_last_error = 6;
         return -1;
     }
 
     memset(vg_backbuffer, 0, bytes);
     virtio_gpu_present();
+    vg_last_error = 0;
     return 0;
 }
 
 int virtio_gpu_is_ready(void)
 {
     return vg_ready;
+}
+
+int virtio_gpu_last_error(void)
+{
+    return vg_last_error;
 }
 
 int virtio_gpu_width(void)

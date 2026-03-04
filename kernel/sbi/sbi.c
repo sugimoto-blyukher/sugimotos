@@ -31,3 +31,11 @@ int getchar(void)
     struct sbiret ret = sbi_call(0, 0, 0, 0, 0, 0, 0, 2);
     return (int) ret.error;
 }
+
+void sbi_shutdown(void)
+{
+    // SBI v0.2+ SRST extension: fid=0(system reset), arg0=0(shutdown), arg1=0(no reason)
+    (void) sbi_call(0, 0, 0, 0, 0, 0, 0, 0x53525354);
+    while (1)
+        __asm__ __volatile__("wfi");
+}

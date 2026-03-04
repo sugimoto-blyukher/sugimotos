@@ -2,6 +2,7 @@
 #include "kernel/syscall.h"
 
 #define USER_STACK_PAGES 2
+#define USER_STACK_TOP 0x40000000u
 
 struct process procs[PROC_MAX];
 struct process *current_proc;
@@ -38,7 +39,7 @@ static void init_switch_context(struct process *proc, uint32_t ra)
 static void release_process_resources(struct process *proc)
 {
     if (proc->is_user && proc->user_stack_pages > 0)
-        free_pages((paddr_t) proc->user_stack_base, proc->user_stack_pages);
+        free_pages(proc->user_stack_paddr, proc->user_stack_pages);
 }
 
 static void mark_process_unused(struct process *proc)
@@ -54,6 +55,135 @@ static struct process *find_process_by_pid(int pid)
             return &procs[i];
     }
     return NULL;
+}
+
+static int user_bounds(const struct process *proc, uint32_t *lo, uint32_t *hi)
+{
+    if (!proc || !proc->is_user || proc->user_stack_pages == 0)
+        return -1;
+    uint32_t base = proc->user_stack_base;
+    uint32_t end = base + proc->user_stack_pages * PAGE_SIZE;
+    if (end < base)
+        return -1;
+    if (lo)
+        *lo = base;
+    if (hi)
+        *hi = end;
+    return 0;
+}
+
+extern char __user_text_start[], __user_text_end[];
+extern char __user_rodata_start[], __user_rodata_end[];
+extern char __user_data_start[], __user_data_end[];
+extern char __user_bss_start[], __user_bss_end[];
+
+static int range_contains(uint32_t base, uint32_t end, uint32_t addr, uint32_t len)
+{
+    if (end < base)
+        return 0;
+    if (len == 0)
+        return (addr >= base && addr < end) ? 1 : 0;
+    uint32_t addr_end = addr + len;
+    if (addr_end < addr)
+        return 0;
+    return (addr >= base && addr_end <= end) ? 1 : 0;
+}
+
+static int user_readable_ok(uint32_t addr, uint32_t len)
+{
+    uint32_t ut0 = (uint32_t) __user_text_start;
+    uint32_t ut1 = (uint32_t) __user_text_end;
+    uint32_t ur0 = (uint32_t) __user_rodata_start;
+    uint32_t ur1 = (uint32_t) __user_rodata_end;
+    uint32_t ud0 = (uint32_t) __user_data_start;
+    uint32_t ud1 = (uint32_t) __user_data_end;
+    uint32_t ub0 = (uint32_t) __user_bss_start;
+    uint32_t ub1 = (uint32_t) __user_bss_end;
+
+    if (range_contains(ut0, ut1, addr, len))
+        return 1;
+    if (range_contains(ur0, ur1, addr, len))
+        return 1;
+    if (range_contains(ud0, ud1, addr, len))
+        return 1;
+    if (range_contains(ub0, ub1, addr, len))
+        return 1;
+
+    uint32_t lo = 0, hi = 0;
+    if (user_bounds(current_proc, &lo, &hi) == 0 && range_contains(lo, hi, addr, len))
+        return 1;
+    return 0;
+}
+
+static int user_writable_ok(uint32_t addr, uint32_t len)
+{
+    uint32_t ud0 = (uint32_t) __user_data_start;
+    uint32_t ud1 = (uint32_t) __user_data_end;
+    uint32_t ub0 = (uint32_t) __user_bss_start;
+    uint32_t ub1 = (uint32_t) __user_bss_end;
+    if (range_contains(ud0, ud1, addr, len))
+        return 1;
+    if (range_contains(ub0, ub1, addr, len))
+        return 1;
+    uint32_t lo = 0, hi = 0;
+    if (user_bounds(current_proc, &lo, &hi) == 0 && range_contains(lo, hi, addr, len))
+        return 1;
+    return 0;
+}
+
+int proc_user_writable_ok(uint32_t addr, uint32_t len)
+{
+    if (!current_proc || !current_proc->is_user)
+        return 1;
+    return user_writable_ok(addr, len);
+}
+
+int proc_user_cstr_ok(uint32_t addr, uint32_t max_len)
+{
+    if (!current_proc || !current_proc->is_user)
+        return 1;
+    if (max_len == 0)
+        return 0;
+    if (!user_readable_ok(addr, 1))
+        return 0;
+    for (uint32_t i = 0; i < max_len; i++) {
+        if (!user_readable_ok(addr + i, 1))
+            return 0;
+        if (*(const char *) (addr + i) == '\0')
+            return 1;
+    }
+    return 0;
+}
+
+int proc_user_exec_argv_ok(uint32_t argv_ptr, int *argc_out)
+{
+    if (argc_out)
+        *argc_out = 0;
+
+    if (!current_proc || !current_proc->is_user)
+        return -1;
+
+    if (argv_ptr == 0) {
+        if (argc_out)
+            *argc_out = 0;
+        return 0;
+    }
+
+    const int max_args = 32;
+    for (int i = 0; i < max_args; i++) {
+        uint32_t slot = argv_ptr + (uint32_t) i * sizeof(uint32_t);
+        if (!user_readable_ok(slot, sizeof(uint32_t)))
+            return -1;
+        uint32_t argp = *(const uint32_t *) slot;
+        if (argp == 0) {
+            if (argc_out)
+                *argc_out = i;
+            return 0;
+        }
+        if (!proc_user_cstr_ok(argp, 128))
+            return -1;
+    }
+    return -1;
 }
 
 __attribute__((naked)) static void resume_from_trap(void)
@@ -165,9 +295,11 @@ struct process *create_process(uint32_t pc)
     proc->exit_status = 0;
     proc->is_user = false;
     proc->user_stack_base = 0;
+    proc->user_stack_paddr = 0;
     proc->user_stack_pages = 0;
     proc->has_trap_frame = false;
     proc->sepc = 0;
+    proc->satp = vm_kernel_satp();
     memset(&proc->trap_frame, 0, sizeof(proc->trap_frame));
     init_switch_context(proc, pc);
     return proc;
@@ -187,9 +319,11 @@ struct process *create_user_process(uint32_t entry_pc)
     proc->exit_status = 0;
     proc->is_user = true;
     proc->user_stack_pages = USER_STACK_PAGES;
-    proc->user_stack_base = alloc_pages(proc->user_stack_pages);
+    proc->user_stack_paddr = alloc_pages(proc->user_stack_pages);
+    proc->user_stack_base = USER_STACK_TOP - proc->user_stack_pages * PAGE_SIZE;
     proc->has_trap_frame = true;
     proc->sepc = entry_pc;
+    proc->satp = vm_build_user_satp(proc->user_stack_base, proc->user_stack_paddr, proc->user_stack_pages);
     memset(&proc->trap_frame, 0, sizeof(proc->trap_frame));
     proc->trap_frame.sp = proc->user_stack_base + proc->user_stack_pages * PAGE_SIZE;
     init_switch_context(proc, (uint32_t) resume_from_trap);
@@ -214,11 +348,13 @@ int proc_fork(struct trap_frame *f, uint32_t user_pc)
     child->exit_status = 0;
     child->is_user = true;
     child->user_stack_pages = parent->user_stack_pages;
-    child->user_stack_base = alloc_pages(child->user_stack_pages);
+    child->user_stack_paddr = alloc_pages(child->user_stack_pages);
+    child->user_stack_base = parent->user_stack_base;
     child->has_trap_frame = true;
+    child->satp = vm_build_user_satp(child->user_stack_base, child->user_stack_paddr, child->user_stack_pages);
     memcpy(child->fds, parent->fds, sizeof(child->fds));
 
-    memcpy((void *) child->user_stack_base, (const void *) parent->user_stack_base,
+    memcpy((void *) child->user_stack_paddr, (const void *) parent->user_stack_paddr,
            child->user_stack_pages * PAGE_SIZE);
 
     child->trap_frame = *f;
@@ -241,20 +377,6 @@ int proc_fork(struct trap_frame *f, uint32_t user_pc)
     return child->pid;
 }
 
-static int count_argv(char *const *argv)
-{
-    if (!argv)
-        return 0;
-
-    int argc = 0;
-    while (argv[argc]) {
-        argc++;
-        if (argc > 32)
-            return -1;
-    }
-    return argc;
-}
-
 int proc_exec(struct trap_frame *f, uint32_t entry_pc, uint32_t argv)
 {
     if (!current_proc->is_user)
@@ -262,8 +384,8 @@ int proc_exec(struct trap_frame *f, uint32_t entry_pc, uint32_t argv)
     if (entry_pc == 0)
         return -1;
 
-    int argc = count_argv((char *const *) argv);
-    if (argc < 0)
+    int argc = 0;
+    if (proc_user_exec_argv_ok(argv, &argc) < 0)
         return -1;
 
     current_proc->sepc = entry_pc;

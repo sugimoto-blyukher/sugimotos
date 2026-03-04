@@ -1,15 +1,29 @@
 #include "kernel/syscall.h"
 
 #define SCAUSE_ECALL_FROM_UMODE 8
+#define SCAUSE_ECALL_FROM_SMODE 9
+
+static int g_user_trap_reporting;
+volatile uint32_t g_last_user_scause;
+volatile uint32_t g_last_user_stval;
+volatile uint32_t g_last_user_sepc;
 
 void handle_trap(struct trap_frame *f)
 {
     uint32_t scause = READ_CSR(scause);
     uint32_t stval = READ_CSR(stval);
     uint32_t user_pc = READ_CSR(sepc);
-
-    if (scause == SCAUSE_ECALL_FROM_UMODE) {
+    if (scause == SCAUSE_ECALL_FROM_UMODE || scause == SCAUSE_ECALL_FROM_SMODE) {
         handle_syscall(f, user_pc);
+        return;
+    }
+
+    if (current_proc && current_proc->is_user) {
+        g_last_user_scause = scause;
+        g_last_user_stval = stval;
+        g_last_user_sepc = user_pc;
+        (void) g_user_trap_reporting;
+        proc_exit(128);
         return;
     }
 

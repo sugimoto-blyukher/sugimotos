@@ -15,6 +15,8 @@ void yield(void)
     if (next == current_proc)
         return;
 
+    vm_activate(next->satp);
+
     __asm__ __volatile__(
         "csrw sscratch, %[sscratch]\n"
         :
