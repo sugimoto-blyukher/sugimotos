@@ -127,8 +127,39 @@ kernel_entry:
 ## 実行手順と出力例
 
 ```
-./run.sh
+./run.sh gui
+./run.sh cui
 ```
+
+- `gui`: QEMU の GTK ウィンドウ内の仮想コンソール (`-serial vc`) にOS出力を表示し、起動直後にGUIシェルを開始
+- `cui`: `-nographic` でターミナル上に表示して起動
+- GUI起動時は `virtio-gpu-device` を接続し、WMは利用可能ならピクセルバックエンドで合成して scanout へ反映（失敗時は従来ANSI描画へフォールバック）
+
+GUIモードでは ANSIカラー描画を使ったグラフィカルなデスクトップを表示し、`wm` サブコマンドで X Window System 風の操作ができます。
+
+- `wm new <title> [w h]`: ウィンドウ作成
+- `wm move <id> <x> <y>` / `wm resize <id> <w> <h>`: 位置・サイズ変更
+- `wm focus <id>` / `wm raise <id>` / `wm close <id>`: フォーカス・前面化・クローズ
+- `wm visible <id> <0|1>`: ウィンドウ可視状態の切替
+- `wm capture <id|off>`: ポインタイベント配送先の capture 制御
+- `wm ev <id> [n]`: ウィンドウイベントキューを読み出し
+- `wm state`: フォーカス/capture/入力状態をダンプ
+- `wm launch <about|notes|monitor>`: 簡易アプリ起動
+- `wm tile`: すべてのウィンドウをタイル配置
+- 画面下部にはタスクバー（アクティブウィンドウと一覧）を表示
+- マウス操作:
+  - `virtio-input` 物理マウス入力（`virtio-mouse-device`）に対応
+  - 左クリックでフォーカス、タイトルバーでドラッグ、右下角でリサイズ
+  - ホイール入力をウィンドウイベントキューへ配送
+- マウス操作（キーボードエミュレーション）:
+  - `Ctrl-W/A/S/D`: カーソル移動
+  - `Ctrl-F`: クリック / タイトルバーでドラッグ開始 / 右下角でリサイズ開始
+  - `Ctrl-G`: ドラッグ/リサイズ終了
+- 画像ファイル:
+  - `img <file>` でGUI上の画像ビューアを起動
+  - PPM はASCIIプレビュー表示
+  - JPEG はサイズ解析 + JFIF内蔵サムネイルのピクセルデコード表示
+  - PNG はサイズ解析とメタデータ表示
 
 出力例（概略）:
 

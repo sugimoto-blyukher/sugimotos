@@ -70,4 +70,7 @@ struct process {
     int state; //プロセスの状態
     vaddr_t sp; //コンテキストスイッチ時のスタックポイント
     uint8_t stack[8192]; //カーネルスタック
+    bool has_trap_frame;
+    uint32_t sepc;
+    struct trap_frame trap_frame;
 };
