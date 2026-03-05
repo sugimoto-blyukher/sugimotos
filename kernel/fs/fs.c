@@ -99,6 +99,63 @@ static int is_ext_fd(const struct file_desc *d)
     return d->inode < 0;
 }
 
+static int valid_fd_index(int fd)
+{
+    return fd >= 0 && fd < FD_MAX;
+}
+
+static struct file_desc *get_open_fd(int fd)
+{
+    if (!valid_fd_index(fd))
+        return NULL;
+    struct file_desc *desc = &current_proc->fds[fd];
+    return desc->used ? desc : NULL;
+}
+
+static int install_fd(struct process *proc, int inode, int flags, uint32_t offset)
+{
+    int fd = alloc_fd(proc);
+    if (fd < 0)
+        return -1;
+
+    proc->fds[fd].used = 1;
+    proc->fds[fd].inode = inode;
+    proc->fds[fd].offset = offset;
+    proc->fds[fd].flags = flags;
+    return fd;
+}
+
+static int open_ext4_readonly(const char *name, int flags)
+{
+    if (!ext4_ready)
+        return -1;
+    if ((flags & 0x3) != O_RDONLY || (flags & O_CREAT))
+        return -1;
+
+    int ext_index = ext4_lookup(name);
+    if (ext_index < 0)
+        return -1;
+
+    return install_fd(current_proc, -ext_index - 1, flags, 0);
+}
+
+static int ensure_ramfs_inode(const char *name, int flags)
+{
+    int inode = find_inode_by_name(name);
+    if (inode >= 0)
+        return inode;
+    if (!(flags & O_CREAT))
+        return -1;
+
+    inode = alloc_inode();
+    if (inode < 0)
+        return -1;
+    memset(&inodes[inode], 0, sizeof(inodes[inode]));
+    inodes[inode].used = 1;
+    str_copy(inodes[inode].name, name);
+    return inode;
+}
+
 void fs_init(void)
 {
     if (fs_initialized)
@@ -133,63 +190,38 @@ int fs_open(const char *path, int flags)
         return -1;
 
     int inode = find_inode_by_name(name);
-    int mode = flags & 0x3;
-
-    if (inode < 0 && mode == O_RDONLY && !(flags & O_CREAT) && ext4_ready) {
-        int ext_index = ext4_lookup(name);
-        if (ext_index >= 0) {
-            int fd = alloc_fd(current_proc);
-            if (fd < 0)
-                return -1;
-            current_proc->fds[fd].used = 1;
-            current_proc->fds[fd].inode = -ext_index - 1;
-            current_proc->fds[fd].offset = 0;
-            current_proc->fds[fd].flags = flags;
-            return fd;
-        }
-    }
-
     if (inode < 0) {
-        if (!(flags & O_CREAT))
-            return -1;
-        inode = alloc_inode();
-        if (inode < 0)
-            return -1;
-        memset(&inodes[inode], 0, sizeof(inodes[inode]));
-        inodes[inode].used = 1;
-        str_copy(inodes[inode].name, name);
+        int ext_fd = open_ext4_readonly(name, flags);
+        if (ext_fd >= 0)
+            return ext_fd;
     }
+
+    inode = ensure_ramfs_inode(name, flags);
+    if (inode < 0)
+        return -1;
 
     if (flags & O_TRUNC)
         inodes[inode].size = 0;
 
-    int fd = alloc_fd(current_proc);
-    if (fd < 0)
-        return -1;
-
-    current_proc->fds[fd].used = 1;
-    current_proc->fds[fd].inode = inode;
-    current_proc->fds[fd].flags = flags;
-    current_proc->fds[fd].offset = (flags & O_APPEND) ? inodes[inode].size : 0;
-    return fd;
+    uint32_t offset = (flags & O_APPEND) ? inodes[inode].size : 0;
+    return install_fd(current_proc, inode, flags, offset);
 }
 
 int fs_close(int fd)
 {
-    if (fd < 0 || fd >= FD_MAX)
+    struct file_desc *desc = get_open_fd(fd);
+    if (!desc)
         return -1;
-    if (!current_proc->fds[fd].used)
-        return -1;
-    memset(&current_proc->fds[fd], 0, sizeof(current_proc->fds[fd]));
+    memset(desc, 0, sizeof(*desc));
     return 0;
 }
 
 int fs_read(int fd, void *buf, uint32_t len)
 {
-    if (fd < 0 || fd >= FD_MAX || !buf)
+    if (!buf)
         return -1;
-    struct file_desc *d = &current_proc->fds[fd];
-    if (!d->used)
+    struct file_desc *d = get_open_fd(fd);
+    if (!d)
         return -1;
     if ((d->flags & 0x3) == O_WRONLY)
         return -1;
@@ -215,10 +247,10 @@ int fs_read(int fd, void *buf, uint32_t len)
 
 int fs_write(int fd, const void *buf, uint32_t len)
 {
-    if (fd < 0 || fd >= FD_MAX || !buf)
+    if (!buf)
         return -1;
-    struct file_desc *d = &current_proc->fds[fd];
-    if (!d->used)
+    struct file_desc *d = get_open_fd(fd);
+    if (!d)
         return -1;
     if (is_ext_fd(d))
         return -1;

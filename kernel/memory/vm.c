@@ -25,6 +25,16 @@ extern char __rodata_start[], __rodata_end[];
 static uint32_t *kernel_root_pt;
 static uint32_t kernel_satp_value;
 
+static uint32_t page_floor(uint32_t value)
+{
+    return value & ~(PAGE_SIZE - 1u);
+}
+
+static uint32_t page_ceil(uint32_t value)
+{
+    return (value + PAGE_SIZE - 1u) & ~(PAGE_SIZE - 1u);
+}
+
 static uint32_t pte_from_pa(uint32_t pa, uint32_t perm)
 {
     return ((pa >> 12) << 10) | perm | PTE_V | PTE_A | PTE_D;
@@ -106,6 +116,13 @@ static uint32_t *vm_root_from_satp(uint32_t satp_value)
 {
     uint32_t ppn = satp_value & SATP_PPN_MASK;
     return (uint32_t *) (ppn << 12);
+}
+
+static int vm_map_identity_segment(uint32_t *root, uint32_t start, uint32_t end, uint32_t flags)
+{
+    if (end <= start)
+        return 0;
+    return vm_map_range_4k(root, start, start, end - start, flags);
 }
 
 void vm_activate(uint32_t satp_value)
@@ -212,40 +229,30 @@ uint32_t vm_build_user_satp(vaddr_t user_stack_base, paddr_t user_stack_paddr, u
     memset(root, 0, PAGE_SIZE);
     memcpy(root, kernel_root_pt, PAGE_SIZE);
 
-    uint32_t text_start = (uint32_t) __user_text_start & ~(PAGE_SIZE - 1u);
-    uint32_t text_end = ((uint32_t) __user_text_end + PAGE_SIZE - 1u) & ~(PAGE_SIZE - 1u);
-    uint32_t ro_start = (uint32_t) __user_rodata_start & ~(PAGE_SIZE - 1u);
-    uint32_t ro_end = ((uint32_t) __user_rodata_end + PAGE_SIZE - 1u) & ~(PAGE_SIZE - 1u);
-    uint32_t kro_start = (uint32_t) __rodata_start & ~(PAGE_SIZE - 1u);
-    uint32_t kro_end = ((uint32_t) __rodata_end + PAGE_SIZE - 1u) & ~(PAGE_SIZE - 1u);
-    uint32_t data_start = (uint32_t) __user_data_start & ~(PAGE_SIZE - 1u);
-    uint32_t data_end = ((uint32_t) __user_data_end + PAGE_SIZE - 1u) & ~(PAGE_SIZE - 1u);
-    uint32_t bss_start = (uint32_t) __user_bss_start & ~(PAGE_SIZE - 1u);
-    uint32_t bss_end = ((uint32_t) __user_bss_end + PAGE_SIZE - 1u) & ~(PAGE_SIZE - 1u);
+    struct vm_identity_segment {
+        uint32_t start;
+        uint32_t end;
+        uint32_t flags;
+    } segments[] = {
+        {page_floor((uint32_t) __rodata_start), page_ceil((uint32_t) __rodata_end), VM_FLG_R | VM_FLG_U},
+        {page_floor((uint32_t) __user_text_start),
+         page_ceil((uint32_t) __user_text_end),
+         VM_FLG_R | VM_FLG_X | VM_FLG_U},
+        {page_floor((uint32_t) __user_rodata_start),
+         page_ceil((uint32_t) __user_rodata_end),
+         VM_FLG_R | VM_FLG_U},
+        {page_floor((uint32_t) __user_data_start),
+         page_ceil((uint32_t) __user_data_end),
+         VM_FLG_R | VM_FLG_W | VM_FLG_U},
+        {page_floor((uint32_t) __user_bss_start),
+         page_ceil((uint32_t) __user_bss_end),
+         VM_FLG_R | VM_FLG_W | VM_FLG_U},
+    };
 
-    if (kro_end > kro_start &&
-        vm_map_range_4k(root, kro_start, kro_start, kro_end - kro_start, VM_FLG_R | VM_FLG_U) < 0)
-        goto fail;
-    if (text_end > text_start &&
-        vm_map_range_4k(root,
-                        text_start,
-                        text_start,
-                        text_end - text_start,
-                        VM_FLG_R | VM_FLG_X | VM_FLG_U) < 0)
-        goto fail;
-    if (ro_end > ro_start &&
-        vm_map_range_4k(root, ro_start, ro_start, ro_end - ro_start, VM_FLG_R | VM_FLG_U) < 0)
-        goto fail;
-    if (data_end > data_start &&
-        vm_map_range_4k(root,
-                        data_start,
-                        data_start,
-                        data_end - data_start,
-                        VM_FLG_R | VM_FLG_W | VM_FLG_U) < 0)
-        goto fail;
-    if (bss_end > bss_start &&
-        vm_map_range_4k(root, bss_start, bss_start, bss_end - bss_start, VM_FLG_R | VM_FLG_W | VM_FLG_U) < 0)
-        goto fail;
+    for (size_t i = 0; i < sizeof(segments) / sizeof(segments[0]); i++) {
+        if (vm_map_identity_segment(root, segments[i].start, segments[i].end, segments[i].flags) < 0)
+            goto fail;
+    }
 
     if (user_stack_pages > 0) {
         if (vm_map_range_4k(root,
