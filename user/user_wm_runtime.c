@@ -1,7 +1,127 @@
-#include "kernel/syscall.h"
-#include "kernel/virtio_gpu.h"
-#include "kernel/virtio_input.h"
-#include "kernel/wm.h"
+#include "user_app.h"
+
+// Export as userland WM symbols to avoid colliding with kernel wm.c symbols.
+#define wm_screen_width uwm_screen_width
+#define wm_screen_height uwm_screen_height
+#define wm_input_init uwm_input_init
+#define wm_poll_mouse_input uwm_poll_mouse_input
+#define wm_set_desktop_id uwm_set_desktop_id
+#define wm_init uwm_init
+#define wm_create uwm_create
+#define wm_move uwm_move
+#define wm_resize uwm_resize
+#define wm_focus uwm_focus
+#define wm_raise uwm_raise
+#define wm_close uwm_close
+#define wm_set_visible uwm_set_visible
+#define wm_set_text uwm_set_text
+#define wm_set_image uwm_set_image
+#define wm_get_rect uwm_get_rect
+#define wm_render uwm_render
+#define wm_list uwm_list
+#define wm_tile uwm_tile
+#define wm_cursor_move uwm_cursor_move
+#define wm_drag_end uwm_drag_end
+#define wm_drag_begin_from_cursor uwm_drag_begin_from_cursor
+#define wm_set_capture uwm_set_capture
+#define wm_get_focus uwm_get_focus
+#define wm_get_capture uwm_get_capture
+#define wm_poll_event uwm_poll_event
+#define wm_dump_state uwm_dump_state
+
+static struct sys_gpu_info u_gpu_info;
+static uint32_t *u_gpu_backing;
+static uint32_t u_gpu_backing_bytes;
+static int u_gpu_inited;
+static int u_input_inited;
+
+static int u_gpu_init_local(void)
+{
+    if (u_gpu_inited)
+        return (u_gpu_info.ready != 0) ? 0 : -1;
+    if (u_syscall0(SYS_GPU_INIT) < 0)
+        return -1;
+    if (u_syscall1(SYS_GPU_INFO, (uint32_t) &u_gpu_info) < 0)
+        return -1;
+    if (!u_gpu_info.ready || u_gpu_info.width == 0 || u_gpu_info.height == 0)
+        return -1;
+    uint64_t bytes64 = (uint64_t) u_gpu_info.width * (uint64_t) u_gpu_info.height * sizeof(uint32_t);
+    if (bytes64 == 0 || bytes64 > 0xffffffffu)
+        return -1;
+    u_gpu_backing_bytes = (uint32_t) bytes64;
+    int addr = u_mmap(0, u_gpu_backing_bytes, VMA_PROT_R | VMA_PROT_W, 0);
+    if (addr < 0)
+        return -1;
+    u_gpu_backing = (uint32_t *) (uint32_t) addr;
+    // Keep allocation lazy; first render/present will fault in needed pages.
+    u_gpu_inited = 1;
+    return 0;
+}
+
+__attribute__((unused)) static int u_gpu_is_ready_local(void)
+{
+    if (!u_gpu_inited)
+        return 0;
+    return u_gpu_info.ready ? 1 : 0;
+}
+
+static int u_gpu_last_error_local(void)
+{
+    return (int) u_gpu_info.last_error;
+}
+
+static int u_gpu_width_local(void)
+{
+    return (int) u_gpu_info.width;
+}
+
+static int u_gpu_height_local(void)
+{
+    return (int) u_gpu_info.height;
+}
+
+__attribute__((unused)) static int u_gpu_pitch_local(void)
+{
+    return (int) u_gpu_info.pitch;
+}
+
+static uint32_t *u_gpu_backbuffer_local(void)
+{
+    return u_gpu_backing;
+}
+
+static void u_gpu_present_local(void)
+{
+    if (!u_gpu_backing || u_gpu_backing_bytes == 0)
+        return;
+    (void) u_syscall2(SYS_GPU_PRESENT, (uint32_t) u_gpu_backing, u_gpu_backing_bytes);
+}
+
+static int u_input_init_local(void)
+{
+    if (u_input_inited)
+        return 0;
+    if (u_syscall0(SYS_INPUT_INIT) < 0)
+        return -1;
+    u_input_inited = 1;
+    return 0;
+}
+
+static int u_input_next_event_local(struct virtio_input_event *ev)
+{
+    return u_syscall1(SYS_INPUT_NEXT_EVENT, (uint32_t) ev);
+}
+
+#define virtio_gpu_init u_gpu_init_local
+#define virtio_gpu_is_ready u_gpu_is_ready_local
+#define virtio_gpu_last_error u_gpu_last_error_local
+#define virtio_gpu_width u_gpu_width_local
+#define virtio_gpu_height u_gpu_height_local
+#define virtio_gpu_pitch u_gpu_pitch_local
+#define virtio_gpu_backbuffer u_gpu_backbuffer_local
+#define virtio_gpu_present u_gpu_present_local
+#define virtio_input_init u_input_init_local
+#define virtio_input_next_event u_input_next_event_local
 
 #define WM_TEXT_SCREEN_W 80
 #define WM_TEXT_SCREEN_H 25
@@ -14,7 +134,7 @@
 #define WM_BG_TITLE 46
 #define WM_BG_TITLE_ACTIVE 45
 #define WM_BG_TASKBAR 100
-#define WM_EVENT_RING_SIZE 64
+#define WM_EVENT_RING_SIZE 256
 #define WM_TASKBAR_PX 28
 #define WM_MIN_WIN_W_PX 120
 #define WM_MIN_WIN_H_PX 80
@@ -43,7 +163,8 @@ struct wm_window {
     int has_image;
     int image_w;
     int image_h;
-    uint32_t image_pixels[WM_IMAGE_MAX_PIXELS];
+    uint32_t *image_pixels;
+    uint32_t image_bytes;
     struct wm_event ev_ring[WM_EVENT_RING_SIZE];
     int ev_head;
     int ev_tail;
@@ -79,10 +200,107 @@ static int vi_shift_down;
 static int vi_ctrl_down;
 static int wm_input_debug = 1;
 static int wm_motion_debug_budget = 64;
+static int wm_dirty_valid;
+static int wm_dirty_x0;
+static int wm_dirty_y0;
+static int wm_dirty_x1;
+static int wm_dirty_y1;
+static int wm_clip_enabled;
+static int wm_clip_x0;
+static int wm_clip_y0;
+static int wm_clip_x1;
+static int wm_clip_y1;
 
 #define WM_DRAG_NONE 0
 #define WM_DRAG_MOVE 1
 #define WM_DRAG_RESIZE 2
+
+static int wm_usable_h(void);
+
+static void wm_mark_dirty_rect(int x, int y, int w, int h)
+{
+    if (w <= 0 || h <= 0)
+        return;
+    int x0 = x;
+    int y0 = y;
+    int x1 = x + w;
+    int y1 = y + h;
+    if (x1 <= 0 || y1 <= 0 || x0 >= wm_screen_w || y0 >= wm_screen_h)
+        return;
+    if (x0 < 0)
+        x0 = 0;
+    if (y0 < 0)
+        y0 = 0;
+    if (x1 > wm_screen_w)
+        x1 = wm_screen_w;
+    if (y1 > wm_screen_h)
+        y1 = wm_screen_h;
+    if (x0 >= x1 || y0 >= y1)
+        return;
+    if (!wm_dirty_valid) {
+        wm_dirty_valid = 1;
+        wm_dirty_x0 = x0;
+        wm_dirty_y0 = y0;
+        wm_dirty_x1 = x1;
+        wm_dirty_y1 = y1;
+        return;
+    }
+    if (x0 < wm_dirty_x0)
+        wm_dirty_x0 = x0;
+    if (y0 < wm_dirty_y0)
+        wm_dirty_y0 = y0;
+    if (x1 > wm_dirty_x1)
+        wm_dirty_x1 = x1;
+    if (y1 > wm_dirty_y1)
+        wm_dirty_y1 = y1;
+}
+
+static void wm_mark_dirty_window_box(int x, int y, int w, int h)
+{
+    wm_mark_dirty_rect(x - 4, y - 4, w + 8, h + 8);
+}
+
+static void wm_mark_dirty_window(const struct wm_window *w)
+{
+    if (!w || !w->used)
+        return;
+    wm_mark_dirty_window_box(w->x, w->y, w->w, w->h);
+}
+
+static void wm_mark_dirty_taskbar(void)
+{
+    int y0 = wm_usable_h();
+    if (y0 < 0)
+        y0 = 0;
+    wm_mark_dirty_rect(0, y0, wm_screen_w, wm_screen_h - y0);
+}
+
+static void wm_mark_dirty_cursor_xy(int x, int y)
+{
+    wm_mark_dirty_rect(x - 1, y - 1, 18, 18);
+}
+
+static void wm_mark_dirty_full(void)
+{
+    wm_dirty_valid = 1;
+    wm_dirty_x0 = 0;
+    wm_dirty_y0 = 0;
+    wm_dirty_x1 = wm_screen_w;
+    wm_dirty_y1 = wm_screen_h;
+}
+
+static void wm_window_free_image(struct wm_window *win)
+{
+    if (!win)
+        return;
+    if (win->image_pixels && win->image_bytes > 0)
+        (void) u_munmap((uint32_t) win->image_pixels, win->image_bytes);
+    win->image_pixels = NULL;
+    win->image_bytes = 0;
+    win->has_image = 0;
+    win->image_w = 0;
+    win->image_h = 0;
+}
 
 static int wm_usable_h(void)
 {
@@ -303,7 +521,7 @@ static int wm_vi_key_to_ascii(uint16_t code, int shift)
     return c;
 }
 
-static void str_copy_lim(char *dst, const char *src, int max)
+static void wm_str_copy_lim(char *dst, const char *src, int max)
 {
     int i = 0;
     if (max <= 0)
@@ -359,6 +577,26 @@ static void wm_queue_event(struct wm_window *w,
 {
     if (!w || !w->used)
         return;
+    if (w->ev_head != w->ev_tail) {
+        int last = (w->ev_tail + WM_EVENT_RING_SIZE - 1) % WM_EVENT_RING_SIZE;
+        struct wm_event *prev = &w->ev_ring[last];
+        if (type == WM_EV_POINTER_MOVE && prev->type == WM_EV_POINTER_MOVE && prev->window_id == window_id) {
+            prev->timestamp_ms = wm_event_tick++;
+            prev->a = a;
+            prev->b = b;
+            prev->c = c;
+            prev->d = d;
+            return;
+        }
+        if (type == WM_EV_WHEEL && prev->type == WM_EV_WHEEL && prev->window_id == window_id) {
+            prev->timestamp_ms = wm_event_tick++;
+            prev->a += a;
+            prev->b = b;
+            prev->c = c;
+            prev->d = d;
+            return;
+        }
+    }
     int next = (w->ev_tail + 1) % WM_EVENT_RING_SIZE;
     if (next == w->ev_head) {
         if (!w->ev_overflow_latched) {
@@ -399,6 +637,9 @@ static int wm_set_focus_internal(int id)
         wm_queue_event(oldw, WM_EV_FOCUS_OUT, (uint32_t) oldw->id, 0, 0, 0, 0);
     if (neww)
         wm_queue_event(neww, WM_EV_FOCUS_IN, (uint32_t) neww->id, 0, 0, 0, 0);
+    wm_mark_dirty_taskbar();
+    wm_mark_dirty_window(oldw);
+    wm_mark_dirty_window(neww);
     return 0;
 }
 
@@ -483,6 +724,8 @@ void wm_init(void)
     vi_btn_left_down = 0;
     vi_shift_down = 0;
     vi_ctrl_down = 0;
+    wm_dirty_valid = 0;
+    wm_mark_dirty_full();
 }
 
 int wm_create(const char *title, int w, int h)
@@ -519,8 +762,10 @@ int wm_create(const char *title, int w, int h)
     win->x = (win->id * 37) % (wm_screen_w - w + 1);
     win->y = (win->id * 2) % (wm_usable_h() - h + 1);
     win->z = wm_next_z++;
-    str_copy_lim(win->title, title ? title : "window", WM_TITLE_MAX);
-    str_copy_lim(win->text, "(empty)", WM_TEXT_MAX);
+    wm_str_copy_lim(win->title, title ? title : "window", WM_TITLE_MAX);
+    wm_str_copy_lim(win->text, "(empty)", WM_TEXT_MAX);
+    wm_mark_dirty_window(win);
+    wm_mark_dirty_taskbar();
     return win->id;
 }
 
@@ -529,6 +774,8 @@ int wm_move(int id, int x, int y)
     struct wm_window *win = wm_find(id);
     if (!win)
         return -1;
+    int old_x = win->x;
+    int old_y = win->y;
     if (x < 0)
         x = 0;
     if (y < 0)
@@ -537,8 +784,10 @@ int wm_move(int id, int x, int y)
         x = wm_screen_w - win->w;
     if (y + win->h > wm_usable_h())
         y = wm_usable_h() - win->h;
+    wm_mark_dirty_window_box(old_x, old_y, win->w, win->h);
     win->x = x;
     win->y = y;
+    wm_mark_dirty_window(win);
     return 0;
 }
 
@@ -547,6 +796,8 @@ int wm_resize(int id, int w, int h)
     struct wm_window *win = wm_find(id);
     if (!win)
         return -1;
+    int old_w = win->w;
+    int old_h = win->h;
     int min_w = wm_gpu_ready ? WM_MIN_WIN_W_PX : 10;
     int min_h = wm_gpu_ready ? WM_MIN_WIN_H_PX : 5;
     if (w < min_w)
@@ -557,8 +808,10 @@ int wm_resize(int id, int w, int h)
         w = wm_screen_w;
     if (h > wm_usable_h())
         h = wm_usable_h();
+    wm_mark_dirty_window_box(win->x, win->y, old_w, old_h);
     win->w = w;
     win->h = h;
+    wm_mark_dirty_window(win);
     return wm_move(id, win->x, win->y);
 }
 
@@ -580,6 +833,7 @@ int wm_raise(int id)
     if (!win)
         return -1;
     win->z = wm_next_z++;
+    wm_mark_dirty_full();
     return 0;
 }
 
@@ -588,6 +842,8 @@ int wm_close(int id)
     struct wm_window *win = wm_find(id);
     if (!win)
         return -1;
+    wm_mark_dirty_window(win);
+    wm_window_free_image(win);
     if (wm_focus_id == id)
         (void) wm_set_focus_internal(0);
     if (wm_capture_id == id)
@@ -595,6 +851,7 @@ int wm_close(int id)
     if (wm_drag_id == id)
         wm_drag_end();
     memset(win, 0, sizeof(*win));
+    wm_mark_dirty_taskbar();
     return 0;
 }
 
@@ -603,6 +860,7 @@ int wm_set_visible(int id, int visible)
     struct wm_window *win = wm_find(id);
     if (!win)
         return -1;
+    wm_mark_dirty_window(win);
     win->visible = visible ? 1 : 0;
     if (!win->visible) {
         if (wm_focus_id == id)
@@ -612,6 +870,7 @@ int wm_set_visible(int id, int visible)
         if (wm_drag_id == id)
             wm_drag_end();
     }
+    wm_mark_dirty_taskbar();
     return 0;
 }
 
@@ -620,7 +879,8 @@ int wm_set_text(int id, const char *text)
     struct wm_window *win = wm_find(id);
     if (!win)
         return -1;
-    str_copy_lim(win->text, text, WM_TEXT_MAX);
+    wm_str_copy_lim(win->text, text, WM_TEXT_MAX);
+    wm_mark_dirty_window(win);
     return 0;
 }
 
@@ -630,9 +890,8 @@ int wm_set_image(int id, const uint32_t *pixels, int w, int h)
     if (!win)
         return -1;
     if (!pixels || w <= 0 || h <= 0) {
-        win->has_image = 0;
-        win->image_w = 0;
-        win->image_h = 0;
+        wm_window_free_image(win);
+        wm_mark_dirty_window(win);
         return 0;
     }
 
@@ -656,6 +915,16 @@ int wm_set_image(int id, const uint32_t *pixels, int w, int h)
             dst_h = WM_IMAGE_MAX_H;
     }
 
+    uint32_t need_bytes = (uint32_t) dst_w * (uint32_t) dst_h * (uint32_t) sizeof(uint32_t);
+    if (!win->image_pixels || win->image_bytes < need_bytes) {
+        wm_window_free_image(win);
+        int addr = u_mmap(0, need_bytes, VMA_PROT_R | VMA_PROT_W, 0);
+        if (addr < 0)
+            return -1;
+        win->image_pixels = (uint32_t *) (uint32_t) addr;
+        win->image_bytes = need_bytes;
+    }
+
     for (int y = 0; y < dst_h; y++) {
         int sy = (y * h) / dst_h;
         for (int x = 0; x < dst_w; x++) {
@@ -666,6 +935,7 @@ int wm_set_image(int id, const uint32_t *pixels, int w, int h)
     win->image_w = dst_w;
     win->image_h = dst_h;
     win->has_image = 1;
+    wm_mark_dirty_window(win);
     return 0;
 }
 
@@ -819,6 +1089,20 @@ static void wm_gpu_fill_rect(uint32_t *fb,
         w = fb_w - x;
     if (y + h > fb_h)
         h = fb_h - y;
+    if (wm_clip_enabled) {
+        if (x < wm_clip_x0) {
+            w -= (wm_clip_x0 - x);
+            x = wm_clip_x0;
+        }
+        if (y < wm_clip_y0) {
+            h -= (wm_clip_y0 - y);
+            y = wm_clip_y0;
+        }
+        if (x + w > wm_clip_x1)
+            w = wm_clip_x1 - x;
+        if (y + h > wm_clip_y1)
+            h = wm_clip_y1 - y;
+    }
     if (w <= 0 || h <= 0)
         return;
     for (int yy = 0; yy < h; yy++) {
@@ -833,6 +1117,8 @@ static void wm_gpu_plot_pixel(uint32_t *fb, int fb_w, int fb_h, int x, int y, ui
     if (!fb)
         return;
     if (x < 0 || y < 0 || x >= fb_w || y >= fb_h)
+        return;
+    if (wm_clip_enabled && (x < wm_clip_x0 || y < wm_clip_y0 || x >= wm_clip_x1 || y >= wm_clip_y1))
         return;
     fb[y * fb_w + x] = 0xff000000u | color;
 }
@@ -1097,7 +1383,7 @@ static void wm_gpu_draw_window_rect(uint32_t *fb,
     if (text_x1 <= text_x0 || text_y1 <= text_y0)
         return;
 
-    if (w->has_image && w->image_w > 0 && w->image_h > 0) {
+    if (w->has_image && w->image_pixels && w->image_w > 0 && w->image_h > 0) {
         int avail_w = text_x1 - text_x0;
         int avail_h = text_y1 - text_y0;
         if (avail_w > 0 && avail_h > 0) {
@@ -1294,6 +1580,14 @@ static void wm_render_gpu(void)
     int fb_h = virtio_gpu_height();
     if (fb_w <= 0 || fb_h <= 0)
         return;
+    if (!wm_dirty_valid)
+        return;
+
+    wm_clip_enabled = 1;
+    wm_clip_x0 = wm_dirty_x0;
+    wm_clip_y0 = wm_dirty_y0;
+    wm_clip_x1 = wm_dirty_x1;
+    wm_clip_y1 = wm_dirty_y1;
 
     int top_h = (fb_h * 3) / 5;
     wm_gpu_fill_rect(fb, fb_w, fb_h, 0, 0, fb_w, top_h, 0x00162236u);
@@ -1331,12 +1625,16 @@ static void wm_render_gpu(void)
     wm_gpu_draw_taskbar(fb, fb_w, fb_h);
     wm_gpu_draw_cursor(fb, fb_w, fb_h);
 
+    wm_clip_enabled = 0;
+    wm_dirty_valid = 0;
     virtio_gpu_present();
 }
 
 void wm_render(void)
 {
     wm_repack_z();
+    if (!wm_dirty_valid)
+        return;
 
     if (wm_gpu_ready) {
         wm_render_gpu();
@@ -1393,10 +1691,13 @@ void wm_render(void)
         cur_bg = -1;
         wm_u_putchar('\n');
     }
+    wm_dirty_valid = 0;
 }
 
 void wm_cursor_move(int dx, int dy)
 {
+    int old_x = wm_cursor_x;
+    int old_y = wm_cursor_y;
     wm_cursor_x += dx;
     wm_cursor_y += dy;
     if (wm_cursor_x < 0)
@@ -1420,10 +1721,13 @@ void wm_cursor_move(int dx, int dy)
             wm_resize(w->id, nw, nh);
         }
     }
+    wm_mark_dirty_cursor_xy(old_x, old_y);
+    wm_mark_dirty_cursor_xy(wm_cursor_x, wm_cursor_y);
 }
 
 void wm_drag_end(void)
 {
+    wm_mark_dirty_full();
     wm_drag_id = 0;
     wm_drag_mode = WM_DRAG_NONE;
 }
@@ -1465,6 +1769,7 @@ void wm_drag_begin_from_cursor(void)
     wm_drag_id = w->id;
     wm_drag_off_x = wm_cursor_x - w->x;
     wm_drag_off_y = wm_cursor_y - w->y;
+    wm_mark_dirty_window(w);
 }
 
 void wm_set_desktop_id(int id)

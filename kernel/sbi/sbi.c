@@ -1,5 +1,12 @@
 #include "kernel/kernel.h"
 
+#define KBDQ_CAP 64
+
+static char kbdq_buf[KBDQ_CAP];
+static int kbdq_head;
+static int kbdq_tail;
+static int kbdq_debug = 1;
+
 struct sbiret sbi_call(long arg0, long arg1, long arg2, long arg3, long arg4,
                        long arg5, long fid, long eid)
 {
@@ -26,8 +33,25 @@ void putchar(char ch)
     sbi_call(ch, 0, 0, 0, 0, 0, 0, 1);
 }
 
+int kbd_enqueue_char(char ch)
+{
+    int next = (kbdq_tail + 1) % KBDQ_CAP;
+    if (next == kbdq_head)
+        return -1;
+    kbdq_buf[kbdq_tail] = ch;
+    kbdq_tail = next;
+    return 0;
+}
+
 int getchar(void)
 {
+    if (kbdq_head != kbdq_tail) {
+        int ch = (unsigned char) kbdq_buf[kbdq_head];
+        kbdq_head = (kbdq_head + 1) % KBDQ_CAP;
+        if (kbdq_debug)
+            printf("kbdq:deq ch=%d\n", ch);
+        return ch;
+    }
     struct sbiret ret = sbi_call(0, 0, 0, 0, 0, 0, 0, 2);
     return (int) ret.error;
 }

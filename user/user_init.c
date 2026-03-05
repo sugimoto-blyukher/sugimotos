@@ -12,6 +12,8 @@ U_BSS struct shell_history g_hist;
 U_BSS struct file_manager g_fm;
 U_BSS char g_file_db[FILE_DB_MAX][FM_NAME_MAX];
 U_BSS int g_file_db_count;
+U_BSS char g_term_view[WM_TEXT_MAX];
+U_BSS int g_term_view_len;
 
 int u_syscall0(int nr)
 {
@@ -107,8 +109,141 @@ int u_syscall5(int nr, uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t arg
     return ret;
 }
 
+U_BSS char g_input_q[16];
+U_BSS int g_input_q_head;
+U_BSS int g_input_q_tail;
+U_BSS int g_input_shift;
+
+U_FN void input_q_push(char ch)
+{
+    int next = (g_input_q_tail + 1) % (int) sizeof(g_input_q);
+    if (next == g_input_q_head)
+        return;
+    g_input_q[g_input_q_tail] = ch;
+    g_input_q_tail = next;
+}
+
+U_FN int input_q_pop(void)
+{
+    if (g_input_q_head == g_input_q_tail)
+        return -1;
+    int ch = (unsigned char) g_input_q[g_input_q_head];
+    g_input_q_head = (g_input_q_head + 1) % (int) sizeof(g_input_q);
+    return ch;
+}
+
+U_FN char map_key_ascii(uint16_t code, int shift)
+{
+    switch (code) {
+        case VI_KEY_A: return shift ? 'A' : 'a';
+        case VI_KEY_B: return shift ? 'B' : 'b';
+        case VI_KEY_C: return shift ? 'C' : 'c';
+        case VI_KEY_D: return shift ? 'D' : 'd';
+        case VI_KEY_E: return shift ? 'E' : 'e';
+        case VI_KEY_F: return shift ? 'F' : 'f';
+        case VI_KEY_G: return shift ? 'G' : 'g';
+        case VI_KEY_H: return shift ? 'H' : 'h';
+        case VI_KEY_I: return shift ? 'I' : 'i';
+        case VI_KEY_J: return shift ? 'J' : 'j';
+        case VI_KEY_K: return shift ? 'K' : 'k';
+        case VI_KEY_L: return shift ? 'L' : 'l';
+        case VI_KEY_M: return shift ? 'M' : 'm';
+        case VI_KEY_N: return shift ? 'N' : 'n';
+        case VI_KEY_O: return shift ? 'O' : 'o';
+        case VI_KEY_P: return shift ? 'P' : 'p';
+        case VI_KEY_Q: return shift ? 'Q' : 'q';
+        case VI_KEY_R: return shift ? 'R' : 'r';
+        case VI_KEY_S: return shift ? 'S' : 's';
+        case VI_KEY_T: return shift ? 'T' : 't';
+        case VI_KEY_U: return shift ? 'U' : 'u';
+        case VI_KEY_V: return shift ? 'V' : 'v';
+        case VI_KEY_W: return shift ? 'W' : 'w';
+        case VI_KEY_X: return shift ? 'X' : 'x';
+        case VI_KEY_Y: return shift ? 'Y' : 'y';
+        case VI_KEY_Z: return shift ? 'Z' : 'z';
+        case VI_KEY_1: return shift ? '!' : '1';
+        case VI_KEY_2: return shift ? '@' : '2';
+        case VI_KEY_3: return shift ? '#' : '3';
+        case VI_KEY_4: return shift ? '$' : '4';
+        case VI_KEY_5: return shift ? '%' : '5';
+        case VI_KEY_6: return shift ? '^' : '6';
+        case VI_KEY_7: return shift ? '&' : '7';
+        case VI_KEY_8: return shift ? '*' : '8';
+        case VI_KEY_9: return shift ? '(' : '9';
+        case VI_KEY_0: return shift ? ')' : '0';
+        case VI_KEY_MINUS: return shift ? '_' : '-';
+        case VI_KEY_EQUAL: return shift ? '+' : '=';
+        case VI_KEY_SPACE: return ' ';
+        case VI_KEY_TAB: return '\t';
+        case VI_KEY_ENTER: return '\n';
+        case VI_KEY_BACKSPACE: return '\b';
+        case VI_KEY_COMMA: return shift ? '<' : ',';
+        case VI_KEY_DOT: return shift ? '>' : '.';
+        case VI_KEY_SLASH: return shift ? '?' : '/';
+        case VI_KEY_SEMICOLON: return shift ? ':' : ';';
+        case VI_KEY_APOSTROPHE: return shift ? '"' : '\'';
+        case VI_KEY_LEFTBRACE: return shift ? '{' : '[';
+        case VI_KEY_RIGHTBRACE: return shift ? '}' : ']';
+        case VI_KEY_BACKSLASH: return shift ? '|' : '\\';
+        case VI_KEY_GRAVE: return shift ? '~' : '`';
+        default:
+            return 0;
+    }
+}
+
 void u_putchar(char c) { (void) u_syscall1(SYS_PUTCHAR, (uint32_t) c); }
-int u_getchar(void) { return u_syscall0(SYS_GETCHAR); }
+int u_getchar(void)
+{
+    int ch = input_q_pop();
+    if (ch >= 0)
+        return ch;
+
+    for (int i = 0; i < 32; i++) {
+        struct sys_event sev;
+        int rc = u_event_poll(&sev);
+        if (rc <= 0)
+            break;
+        if (sev.type != KEVENT_TYPE_INPUT)
+            continue;
+
+        struct virtio_input_event ev = {
+            .type = (uint16_t) sev.a,
+            .code = (uint16_t) sev.b,
+            .value = sev.c,
+        };
+        if (ev.type != VI_EV_KEY)
+            continue;
+
+        if (ev.code == VI_KEY_LEFTSHIFT || ev.code == VI_KEY_RIGHTSHIFT) {
+            g_input_shift = (ev.value != 0) ? 1 : 0;
+            continue;
+        }
+        if (ev.value == 0)
+            continue;
+
+        if (ev.code == VI_KEY_UP) {
+            input_q_push(27);
+            input_q_push('[');
+            input_q_push('A');
+            continue;
+        }
+        if (ev.code == VI_KEY_DOWN) {
+            input_q_push(27);
+            input_q_push('[');
+            input_q_push('B');
+            continue;
+        }
+
+        char a = map_key_ascii(ev.code, g_input_shift);
+        if (a)
+            input_q_push(a);
+    }
+
+    ch = input_q_pop();
+    if (ch >= 0)
+        return ch;
+    return u_syscall0(SYS_GETCHAR);
+}
 void u_yield(void) { (void) u_syscall0(SYS_YIELD); }
 void u_shutdown(void) { (void) u_syscall0(SYS_SHUTDOWN); }
 void u_exit(int code)
@@ -126,44 +261,97 @@ int u_rename(const char *old_path, const char *new_path)
 {
     return u_syscall2(SYS_RENAME, (uint32_t) old_path, (uint32_t) new_path);
 }
+int u_mmap(uint32_t addr_hint, uint32_t len, uint32_t prot, uint32_t flags)
+{
+    return u_syscall4(SYS_MMAP, addr_hint, len, prot, flags);
+}
+int u_munmap(uint32_t addr, uint32_t len)
+{
+    return u_syscall2(SYS_MUNMAP, addr, len);
+}
+int u_event_poll(struct sys_event *ev)
+{
+    return u_syscall1(SYS_EVENT_POLL, (uint32_t) ev);
+}
 
 int u_wm_create(const char *title, int w, int h)
 {
-    return u_syscall4(SYS_WMCTL, WMCTL_CREATE, (uint32_t) title, (uint32_t) w, (uint32_t) h);
+    return uwm_create(title, w, h);
 }
 int u_wm_set_text(int id, const char *text)
 {
-    return u_syscall4(SYS_WMCTL, WMCTL_SET_TEXT, (uint32_t) id, (uint32_t) text, 0);
+    return uwm_set_text(id, text);
 }
 int u_wm_focus(int id)
 {
-    return u_syscall4(SYS_WMCTL, WMCTL_FOCUS, (uint32_t) id, 0, 0);
+    return uwm_focus(id);
 }
 int u_wm_close(int id)
 {
-    return u_syscall4(SYS_WMCTL, WMCTL_CLOSE, (uint32_t) id, 0, 0);
+    return uwm_close(id);
 }
 int u_wm_set_image(int id, const uint32_t *pixels, int w, int h)
 {
-    return u_syscall5(SYS_WMCTL, WMCTL_SET_IMAGE, (uint32_t) id, (uint32_t) pixels, (uint32_t) w, (uint32_t) h);
+    return uwm_set_image(id, pixels, w, h);
 }
 int u_wm_poll_mouse(void)
 {
-    return u_syscall4(SYS_WMCTL, WMCTL_POLL_MOUSE, 0, 0, 0);
+    return uwm_poll_mouse_input();
 }
 int u_wm_poll_event(int id, struct wm_event *ev)
 {
-    return u_syscall4(SYS_WMCTL, WMCTL_POLL_EVENT, (uint32_t) id, (uint32_t) ev, 0);
+    return uwm_poll_event(id, ev);
 }
 void u_wm_render(void)
 {
-    (void) u_syscall4(SYS_WMCTL, WMCTL_RENDER, 0, 0, 0);
+    uwm_render();
 }
 
 void u_puts(const char *s)
 {
     while (*s)
         u_putchar(*s++);
+}
+
+U_FN void term_view_sync(void)
+{
+    if (g_main_win > 0)
+        (void) u_wm_set_text(g_main_win, g_term_view);
+}
+
+U_FN void term_view_append_char(char c)
+{
+    if (g_term_view_len + 1 >= WM_TEXT_MAX)
+        return;
+    g_term_view[g_term_view_len++] = c;
+    g_term_view[g_term_view_len] = '\0';
+}
+
+U_FN void term_view_append(const char *s)
+{
+    if (!s)
+        return;
+    while (*s)
+        term_view_append_char(*s++);
+}
+
+U_FN void term_view_backspace(void)
+{
+    if (g_term_view_len <= 0)
+        return;
+    if (g_term_view[g_term_view_len - 1] == '\n')
+        return;
+    g_term_view_len--;
+    g_term_view[g_term_view_len] = '\0';
+}
+
+U_FN void term_view_reset(void)
+{
+    g_term_view_len = 0;
+    g_term_view[0] = '\0';
+    term_view_append("user:init apps in userspace (sv32)\n");
+    term_view_append("u> ");
+    term_view_sync();
 }
 
 int str_len(const char *s)
@@ -492,9 +680,51 @@ U_RO const char u_cmd_exit[] = "exit";
 U_RO const char u_cmd_status[] = "status";
 U_RO const char u_cmd_int[] = "int";
 
+U_FN void shell_open_terminal_window(void)
+{
+    if (g_main_win > 0) {
+        // Window may have been closed by titlebar button in WM.
+        if (u_wm_focus(g_main_win) < 0)
+            g_main_win = 0;
+    }
+    if (g_main_win <= 0)
+        g_main_win = u_wm_create(u_gui_title, 520, 300);
+    if (g_main_win <= 0) {
+        u_puts("gui: failed\n");
+        return;
+    }
+
+    (void) u_wm_set_text(g_main_win, u_gui_text);
+    (void) u_wm_focus(g_main_win);
+    if (g_term_view_len <= 0)
+        term_view_reset();
+    else
+        term_view_sync();
+    u_wm_render();
+    u_puts("gui: opened\n");
+}
+
+U_FN void shell_close_terminal_window(void)
+{
+    if (g_main_win > 0 && u_wm_close(g_main_win) == 0) {
+        g_main_win = 0;
+        u_wm_render();
+        u_puts("close: ok\n");
+    } else {
+        u_puts("close: no window\n");
+    }
+}
+
 U_TEXT void user_init_entry(void)
 {
     u_puts(u_banner);
+    g_input_q_head = 0;
+    g_input_q_tail = 0;
+    g_input_shift = 0;
+    uwm_init();
+    (void) uwm_input_init();
+    g_term_view_len = 0;
+    g_term_view[0] = '\0';
     history_init(&g_hist);
     g_file_db_count = 0;
     filedb_add("/ext_hello.txt");
@@ -505,10 +735,13 @@ U_TEXT void user_init_entry(void)
     if (g_main_win <= 0)
         g_main_win = u_wm_create(u_gui_title, 520, 300);
     if (g_main_win > 0) {
-        (void) u_wm_set_text(g_main_win, u_gui_text);
+        term_view_reset();
         (void) u_wm_focus(g_main_win);
-        u_wm_render();
+    } else {
+        u_puts("gui: autostart window create failed\n");
     }
+    // Draw at least once on boot in GUI mode even if window creation fails.
+    u_wm_render();
 #endif
 
     u_puts(u_prompt);
@@ -571,8 +804,29 @@ U_TEXT void user_init_entry(void)
             continue;
         }
 
+        if (ch == 19) { // Ctrl+S
+            u_puts("\nuser:ctrl+s recv\n");
+            shell_open_terminal_window();
+            history_cancel(&g_hist);
+            len = 0;
+            g_line[0] = '\0';
+            u_puts(u_prompt);
+            continue;
+        }
+
+        if (ch == 17) { // Ctrl+Q
+            u_puts("\nuser:ctrl+q recv\n");
+            shell_close_terminal_window();
+            history_cancel(&g_hist);
+            len = 0;
+            g_line[0] = '\0';
+            u_puts(u_prompt);
+            continue;
+        }
+
         if (ch == '\r' || ch == '\n') {
             u_putchar('\n');
+            term_view_append("\n");
             g_line[len] = '\0';
             history_cancel(&g_hist);
 
@@ -619,24 +873,9 @@ U_TEXT void user_init_entry(void)
                 } else if (str_eq(argv[0], u_cmd_fm)) {
                     fm_run();
                 } else if (str_eq(argv[0], u_cmd_gui)) {
-                    if (g_main_win <= 0)
-                        g_main_win = u_wm_create(u_gui_title, 520, 300);
-                    if (g_main_win > 0) {
-                        (void) u_wm_set_text(g_main_win, u_gui_text);
-                        (void) u_wm_focus(g_main_win);
-                        u_wm_render();
-                        u_puts("gui: opened\n");
-                    } else {
-                        u_puts("gui: failed\n");
-                    }
+                    shell_open_terminal_window();
                 } else if (str_eq(argv[0], u_cmd_close)) {
-                    if (g_main_win > 0 && u_wm_close(g_main_win) == 0) {
-                        g_main_win = 0;
-                        u_wm_render();
-                        u_puts("close: ok\n");
-                    } else {
-                        u_puts("close: no window\n");
-                    }
+                    shell_close_terminal_window();
                 } else if (str_eq(argv[0], u_cmd_shutdown)) {
                     u_shutdown();
                 } else if (str_eq(argv[0], u_cmd_exit)) {
@@ -661,6 +900,8 @@ U_TEXT void user_init_entry(void)
 
             len = 0;
             u_puts(u_prompt);
+            term_view_append("u> ");
+            term_view_sync();
             continue;
         }
 
@@ -668,6 +909,8 @@ U_TEXT void user_init_entry(void)
             if (len > 0) {
                 len--;
                 u_puts(u_bs);
+                term_view_backspace();
+                term_view_sync();
             }
             history_cancel(&g_hist);
             continue;
@@ -678,6 +921,8 @@ U_TEXT void user_init_entry(void)
         if (len + 1 < SHELL_MAX_LINE) {
             g_line[len++] = (char) ch;
             u_putchar((char) ch);
+            term_view_append_char((char) ch);
+            term_view_sync();
         }
         history_cancel(&g_hist);
     }

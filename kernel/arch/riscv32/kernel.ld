@@ -16,7 +16,7 @@ SECTIONS {
         __rodata_end = .;
     }
 
-    .data : ALIGN(4) {
+    .data ALIGN(4096) : {
         __data_start = .;
         *(.data .data.*);
         __data_end = .;
@@ -58,6 +58,6 @@ SECTIONS {
 
     . = ALIGN(4096);
     __free_ram = .;
-    . += 64 * 1024 + 1024;
+    . += 32 * 1024 * 1024;
     __free_ram_end = .;
 }

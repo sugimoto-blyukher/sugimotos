@@ -12,3 +12,4 @@ int virtio_gpu_pitch(void);
 
 uint32_t *virtio_gpu_backbuffer(void);
 void virtio_gpu_present(void);
+void virtio_gpu_handle_irq(void);

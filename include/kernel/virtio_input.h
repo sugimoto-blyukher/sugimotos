@@ -10,6 +10,7 @@ struct virtio_input_event {
 
 int virtio_input_init(void);
 int virtio_input_next_event(struct virtio_input_event *ev);
+void virtio_input_handle_irq(void);
 
 #define VI_EV_SYN 0
 #define VI_EV_KEY 1

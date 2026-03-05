@@ -1,6 +1,7 @@
 #pragma once
 
 #include "kernel/syscall.h"
+#include "kernel/event.h"
 #include "kernel/virtio_input.h"
 #include "kernel/wm.h"
 
@@ -15,7 +16,7 @@
 #define U_BSS
 
 #ifndef USER_INIT_AUTOSTART_GUI
-#define USER_INIT_AUTOSTART_GUI 0
+#define USER_INIT_AUTOSTART_GUI 1
 #endif
 
 #define SHELL_MAX_LINE 128
@@ -84,6 +85,9 @@ int u_read(int fd, void *buf, uint32_t len);
 int u_write(int fd, const void *buf, uint32_t len);
 int u_unlink(const char *path);
 int u_rename(const char *old_path, const char *new_path);
+int u_mmap(uint32_t addr_hint, uint32_t len, uint32_t prot, uint32_t flags);
+int u_munmap(uint32_t addr, uint32_t len);
+int u_event_poll(struct sys_event *ev);
 int u_wm_create(const char *title, int w, int h);
 int u_wm_set_text(int id, const char *text);
 int u_wm_focus(int id);
@@ -92,6 +96,20 @@ int u_wm_set_image(int id, const uint32_t *pixels, int w, int h);
 int u_wm_poll_mouse(void);
 int u_wm_poll_event(int id, struct wm_event *ev);
 void u_wm_render(void);
+
+int uwm_input_init(void);
+int uwm_poll_mouse_input(void);
+void uwm_init(void);
+int uwm_create(const char *title, int w, int h);
+int uwm_focus(int id);
+int uwm_close(int id);
+int uwm_set_text(int id, const char *text);
+int uwm_set_image(int id, const uint32_t *pixels, int w, int h);
+int uwm_poll_event(int window_id, struct wm_event *ev);
+void uwm_cursor_move(int dx, int dy);
+void uwm_drag_begin_from_cursor(void);
+void uwm_drag_end(void);
+void uwm_render(void);
 
 void u_puts(const char *s);
 int str_len(const char *s);

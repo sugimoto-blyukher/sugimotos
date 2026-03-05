@@ -1,4 +1,5 @@
 #include "kernel/virtio_input.h"
+#include "kernel/event.h"
 
 #define VIRTIO_MMIO_BASE 0x10001000
 #define VIRTIO_MMIO_STEP 0x1000
@@ -11,6 +12,7 @@
 #define VI_MMIO_CONFIG_SUBSEL 0x100
 #define VI_MMIO_CONFIG_SIZE 0x104
 #define VI_MMIO_CONFIG_DATA 0x108
+#define VI_MMIO_DEVICE_FEATURES 0x010
 #define VI_MMIO_DEVICE_FEATURES_SEL 0x014
 #define VI_MMIO_DRIVER_FEATURES_SEL 0x024
 #define VI_MMIO_DRIVER_FEATURES 0x020
@@ -25,11 +27,14 @@
 #define VI_MMIO_QUEUE_DRIVER_HIGH 0x094
 #define VI_MMIO_QUEUE_DEVICE_LOW 0x0a0
 #define VI_MMIO_QUEUE_DEVICE_HIGH 0x0a4
+#define VI_MMIO_INTERRUPT_STATUS 0x060
+#define VI_MMIO_INTERRUPT_ACK 0x064
 
 #define VI_STATUS_ACKNOWLEDGE 1
 #define VI_STATUS_DRIVER 2
 #define VI_STATUS_DRIVER_OK 4
 #define VI_STATUS_FEATURES_OK 8
+#define VI_FEATURE_VERSION_1 32
 
 #define VI_DESC_F_WRITE 2
 #define VI_QNUM 32
@@ -73,6 +78,7 @@ static uint32_t vi_bases[VI_MAX_DEVICES];
 static uint16_t vi_last_used[VI_MAX_DEVICES];
 static int vi_dev_count;
 static int vi_rr_next;
+static int vi_ev_debug_budget = 128;
 
 static inline void vi_mmio_write(uint32_t base, uint32_t off, uint32_t val)
 {
@@ -155,10 +161,26 @@ static int vi_init_one_device(int dev, uint32_t base)
     vi_mmio_write(base, VI_MMIO_STATUS, 0);
     vi_mmio_write(base, VI_MMIO_STATUS, VI_STATUS_ACKNOWLEDGE);
     vi_mmio_write(base, VI_MMIO_STATUS, VI_STATUS_ACKNOWLEDGE | VI_STATUS_DRIVER);
+
+    uint64_t dev_features = 0;
     vi_mmio_write(base, VI_MMIO_DEVICE_FEATURES_SEL, 0);
+    dev_features |= (uint64_t) vi_mmio_read(base, VI_MMIO_DEVICE_FEATURES);
+    vi_mmio_write(base, VI_MMIO_DEVICE_FEATURES_SEL, 1);
+    dev_features |= ((uint64_t) vi_mmio_read(base, VI_MMIO_DEVICE_FEATURES)) << 32;
+
+    uint64_t drv_features = 0;
+    if (dev_features & (1ull << VI_FEATURE_VERSION_1))
+        drv_features |= (1ull << VI_FEATURE_VERSION_1);
+    else
+        return -1;
+
     vi_mmio_write(base, VI_MMIO_DRIVER_FEATURES_SEL, 0);
-    vi_mmio_write(base, VI_MMIO_DRIVER_FEATURES, 0);
+    vi_mmio_write(base, VI_MMIO_DRIVER_FEATURES, (uint32_t) drv_features);
+    vi_mmio_write(base, VI_MMIO_DRIVER_FEATURES_SEL, 1);
+    vi_mmio_write(base, VI_MMIO_DRIVER_FEATURES, (uint32_t) (drv_features >> 32));
     vi_mmio_write(base, VI_MMIO_STATUS, VI_STATUS_ACKNOWLEDGE | VI_STATUS_DRIVER | VI_STATUS_FEATURES_OK);
+    if ((vi_mmio_read(base, VI_MMIO_STATUS) & VI_STATUS_FEATURES_OK) == 0)
+        return -1;
 
     vi_mmio_write(base, VI_MMIO_QUEUE_SEL, 0);
     if (vi_mmio_read(base, VI_MMIO_QUEUE_NUM_MAX) < VI_QNUM)
@@ -230,6 +252,8 @@ int virtio_input_init(void)
         }
     }
 
+    printf("virtio-input: candidates=%d\n", cand_count);
+
     for (int i = 0; i < cand_count; i++) {
         int best = i;
         for (int j = i + 1; j < cand_count; j++) {
@@ -244,14 +268,22 @@ int virtio_input_init(void)
     }
 
     for (int i = 0; i < cand_count && vi_dev_count < VI_MAX_DEVICES; i++) {
-        if (vi_init_one_device(vi_dev_count, cand[i].base) == 0)
+        if (vi_init_one_device(vi_dev_count, cand[i].base) == 0) {
+            printf("virtio-input: init ok dev=%d base=%x score=%d\n",
+                   vi_dev_count,
+                   cand[i].base,
+                   cand[i].score);
             vi_dev_count++;
+        } else {
+            printf("virtio-input: init fail base=%x score=%d\n", cand[i].base, cand[i].score);
+        }
     }
 
+    printf("virtio-input: devices=%d\n", vi_dev_count);
     return (vi_dev_count > 0) ? 0 : -1;
 }
 
-int virtio_input_next_event(struct virtio_input_event *ev)
+static int vi_fetch_one_event(struct virtio_input_event *ev, int *dev_out)
 {
     if (!ev || vi_dev_count <= 0)
         return 0;
@@ -268,12 +300,46 @@ int virtio_input_next_event(struct virtio_input_event *ev)
             continue;
 
         *ev = vi_events[dev][id];
+        if (vi_ev_debug_budget > 0) {
+            printf("virtio-input: ev dev=%d type=%u code=%u val=%u\n",
+                   dev,
+                   (unsigned) ev->type,
+                   (unsigned) ev->code,
+                   (unsigned) ev->value);
+            vi_ev_debug_budget--;
+        }
         vi_queue_push(dev, (uint16_t) id);
         __sync_synchronize();
         vi_mmio_write(vi_bases[dev], VI_MMIO_QUEUE_NOTIFY, 0);
         vi_rr_next = (dev + 1) % vi_dev_count;
+        if (dev_out)
+            *dev_out = dev;
         return 1;
     }
 
     return 0;
+}
+
+int virtio_input_next_event(struct virtio_input_event *ev)
+{
+    return vi_fetch_one_event(ev, NULL);
+}
+
+void virtio_input_handle_irq(void)
+{
+    for (int dev = 0; dev < vi_dev_count; dev++) {
+        uint32_t base = vi_bases[dev];
+        if (!base)
+            continue;
+        uint32_t st = vi_mmio_read(base, VI_MMIO_INTERRUPT_STATUS);
+        if (st)
+            vi_mmio_write(base, VI_MMIO_INTERRUPT_ACK, st);
+    }
+
+    struct virtio_input_event ev;
+    int dev = 0;
+    while (vi_fetch_one_event(&ev, &dev) > 0) {
+        (void) dev;
+        kevent_push(KEVENT_TYPE_INPUT, (uint32_t) ev.type, (uint32_t) ev.code, ev.value, 0);
+    }
 }

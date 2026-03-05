@@ -4,3 +4,4 @@
 
 int blk_init(void);
 int blk_read(uint32_t sector, void *buf);
+void blk_handle_irq(void);

@@ -1,5 +1,7 @@
 #include "kernel/blk.h"
 #include "kernel/kernel.h"
+#include "kernel/lock.h"
+#include "kernel/waitq.h"
 
 #define VIRTIO_MMIO_BASE 0x10001000
 #define VIRTIO_MMIO_STEP 0x1000
@@ -38,6 +40,8 @@
 #define VIRTQ_DESC_F_WRITE 2
 
 #define VIRTIO_BLK_T_IN 0
+#define VIRTQ_NUM 32
+#define BLK_REQ_MAX 8
 
 struct virtq_desc {
     uint64_t addr;
@@ -49,7 +53,7 @@ struct virtq_desc {
 struct virtq_avail {
     uint16_t flags;
     uint16_t idx;
-    uint16_t ring[8];
+    uint16_t ring[VIRTQ_NUM];
 } __attribute__((packed));
 
 struct virtq_used_elem {
@@ -60,7 +64,7 @@ struct virtq_used_elem {
 struct virtq_used {
     uint16_t flags;
     uint16_t idx;
-    struct virtq_used_elem ring[8];
+    struct virtq_used_elem ring[VIRTQ_NUM];
 } __attribute__((packed));
 
 struct virtio_blk_req {
@@ -69,15 +73,23 @@ struct virtio_blk_req {
     uint64_t sector;
 } __attribute__((packed));
 
-static struct virtq_desc desc[8] __attribute__((aligned(16)));
+static struct virtq_desc desc[VIRTQ_NUM] __attribute__((aligned(16)));
 static struct virtq_avail avail __attribute__((aligned(2)));
 static volatile struct virtq_used used __attribute__((aligned(4)));
 
-static struct virtio_blk_req req;
-static volatile uint8_t req_status;
+struct blk_slot {
+    struct virtio_blk_req req;
+    volatile uint8_t status;
+    uint8_t in_use;
+    uint8_t done;
+};
+
+static struct blk_slot blk_slots[BLK_REQ_MAX];
 static uint16_t used_idx;
 static bool blk_ready;
 static uint32_t virtio_base;
+static struct waitq blk_waitq;
+static struct spinlock blk_lock;
 
 static inline void mmio_write(uint32_t off, uint32_t val)
 {
@@ -87,6 +99,29 @@ static inline void mmio_write(uint32_t off, uint32_t val)
 static inline uint32_t mmio_read(uint32_t off)
 {
     return *(volatile uint32_t *) (virtio_base + off);
+}
+
+static uint16_t blk_head_for_slot(int slot_idx)
+{
+    return (uint16_t) (slot_idx * 3);
+}
+
+static void blk_process_used_locked(void)
+{
+    __sync_synchronize();
+    while (used_idx != used.idx) {
+        uint16_t ring_idx = used_idx % VIRTQ_NUM;
+        uint32_t head = used.ring[ring_idx].id;
+        used_idx++;
+        if ((head % 3u) != 0)
+            continue;
+        uint32_t slot_idx = head / 3u;
+        if (slot_idx >= BLK_REQ_MAX)
+            continue;
+        if (!blk_slots[slot_idx].in_use)
+            continue;
+        blk_slots[slot_idx].done = 1;
+    }
 }
 
 int blk_init(void)
@@ -121,9 +156,11 @@ int blk_init(void)
         return -1;
 
     mmio_write(MMIO_QUEUE_SEL, 0);
-    if (mmio_read(MMIO_QUEUE_NUM_MAX) < 8)
+    if (mmio_read(MMIO_QUEUE_NUM_MAX) < VIRTQ_NUM)
         return -1;
-    mmio_write(MMIO_QUEUE_NUM, 8);
+    if (VIRTQ_NUM < (BLK_REQ_MAX * 3))
+        return -1;
+    mmio_write(MMIO_QUEUE_NUM, VIRTQ_NUM);
 
     memset(desc, 0, sizeof(desc));
     memset(&avail, 0, sizeof(avail));
@@ -142,6 +179,8 @@ int blk_init(void)
 
     used_idx = 0;
     blk_ready = true;
+    memset(blk_slots, 0, sizeof(blk_slots));
+    waitq_init(&blk_waitq);
     return 0;
 }
 
@@ -150,42 +189,90 @@ int blk_read(uint32_t sector, void *buf)
     if (!blk_ready || !buf)
         return -1;
 
-    req.type = VIRTIO_BLK_T_IN;
-    req.reserved = 0;
-    req.sector = sector;
-    req_status = 0xff;
+    int slot_idx = -1;
+    while (slot_idx < 0) {
+        spin_lock(&blk_lock);
+        blk_process_used_locked();
+        for (int i = 0; i < BLK_REQ_MAX; i++) {
+            if (!blk_slots[i].in_use) {
+                slot_idx = i;
+                blk_slots[i].in_use = 1;
+                blk_slots[i].done = 0;
+                blk_slots[i].status = 0xff;
+                break;
+            }
+        }
+        spin_unlock(&blk_lock);
+        if (slot_idx >= 0)
+            break;
+        if (current_proc)
+            waitq_sleep(&blk_waitq);
+        else
+            __asm__ __volatile__("wfi");
+    }
 
-    desc[0].addr = (uint64_t) (uint32_t) &req;
-    desc[0].len = sizeof(req);
-    desc[0].flags = VIRTQ_DESC_F_NEXT;
-    desc[0].next = 1;
+    struct blk_slot *slot = &blk_slots[slot_idx];
+    slot->req.type = VIRTIO_BLK_T_IN;
+    slot->req.reserved = 0;
+    slot->req.sector = sector;
 
-    desc[1].addr = (uint64_t) (uint32_t) buf;
-    desc[1].len = 512;
-    desc[1].flags = VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE;
-    desc[1].next = 2;
+    uint16_t head = blk_head_for_slot(slot_idx);
+    uint16_t d0 = head;
+    uint16_t d1 = (uint16_t) (head + 1);
+    uint16_t d2 = (uint16_t) (head + 2);
 
-    desc[2].addr = (uint64_t) (uint32_t) &req_status;
-    desc[2].len = 1;
-    desc[2].flags = VIRTQ_DESC_F_WRITE;
-    desc[2].next = 0;
+    spin_lock(&blk_lock);
+    desc[d0].addr = (uint64_t) (uint32_t) &slot->req;
+    desc[d0].len = sizeof(slot->req);
+    desc[d0].flags = VIRTQ_DESC_F_NEXT;
+    desc[d0].next = d1;
 
-    avail.ring[avail.idx % 8] = 0;
+    desc[d1].addr = (uint64_t) (uint32_t) buf;
+    desc[d1].len = 512;
+    desc[d1].flags = VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE;
+    desc[d1].next = d2;
+
+    desc[d2].addr = (uint64_t) (uint32_t) &slot->status;
+    desc[d2].len = 1;
+    desc[d2].flags = VIRTQ_DESC_F_WRITE;
+    desc[d2].next = 0;
+
+    avail.ring[avail.idx % VIRTQ_NUM] = head;
     __sync_synchronize();
     avail.idx++;
     __sync_synchronize();
-
     mmio_write(MMIO_QUEUE_NOTIFY, 0);
+    spin_unlock(&blk_lock);
 
-    uint32_t spin = 0;
-    while (used_idx == used.idx) {
-        spin++;
-        if (spin > 100000000)
-            return -1;
+    while (1) {
+        spin_lock(&blk_lock);
+        blk_process_used_locked();
+        if (slot->done) {
+            int ok = (slot->status == 0);
+            slot->done = 0;
+            slot->in_use = 0;
+            spin_unlock(&blk_lock);
+            waitq_wake_all(&blk_waitq);
+            return ok ? 0 : -1;
+        }
+        spin_unlock(&blk_lock);
+        if (current_proc)
+            waitq_sleep(&blk_waitq);
+        else
+            __asm__ __volatile__("wfi");
     }
-    used_idx = used.idx;
+}
 
-    mmio_write(MMIO_INTERRUPT_ACK, mmio_read(MMIO_INTERRUPT_STATUS));
-
-    return (req_status == 0) ? 0 : -1;
+void blk_handle_irq(void)
+{
+    if (!virtio_base)
+        return;
+    uint32_t st = mmio_read(MMIO_INTERRUPT_STATUS);
+    if (!st)
+        return;
+    mmio_write(MMIO_INTERRUPT_ACK, st);
+    spin_lock(&blk_lock);
+    blk_process_used_locked();
+    spin_unlock(&blk_lock);
+    waitq_wake_all(&blk_waitq);
 }

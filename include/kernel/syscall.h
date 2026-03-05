@@ -19,6 +19,14 @@
 #define SYS_SHUTDOWN 15
 #define SYS_RENAME 16
 #define SYS_WMCTL 17
+#define SYS_MMAP 18
+#define SYS_MUNMAP 19
+#define SYS_GPU_INIT 20
+#define SYS_GPU_INFO 21
+#define SYS_GPU_PRESENT 22
+#define SYS_INPUT_INIT 23
+#define SYS_INPUT_NEXT_EVENT 24
+#define SYS_EVENT_POLL 25
 
 #define WMCTL_CREATE 1
 #define WMCTL_SET_TEXT 2
@@ -40,5 +48,24 @@
 #define O_CREAT 0x100
 #define O_TRUNC 0x200
 #define O_APPEND 0x400
+
+#define MAP_FIXED 1u
+
+struct sys_gpu_info {
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    uint32_t ready;
+    uint32_t last_error;
+};
+
+struct sys_event {
+    uint32_t type;
+    uint32_t a;
+    uint32_t b;
+    uint32_t c;
+    uint32_t d;
+    uint64_t seq;
+};
 
 void handle_syscall(struct trap_frame *f, uint32_t user_pc);

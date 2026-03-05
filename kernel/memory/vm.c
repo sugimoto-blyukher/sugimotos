@@ -1,6 +1,7 @@
 #include "kernel/kernel.h"
 
 #define SATP_MODE_SV32 (1u << 31)
+#define SATP_PPN_MASK 0x003fffffu
 
 #define PTE_V (1u << 0)
 #define PTE_R (1u << 1)
@@ -51,7 +52,9 @@ static int vm_map_page(uint32_t *root, uint32_t va, uint32_t pa, uint32_t flags)
     uint32_t *l0;
 
     if (!(pte1 & PTE_V) || (pte1 & (PTE_R | PTE_W | PTE_X))) {
-        paddr_t l0_pa = alloc_pages(1);
+        paddr_t l0_pa = alloc_pages_try(1);
+        if (!l0_pa)
+            return -1;
         memset((void *) l0_pa, 0, PAGE_SIZE);
         if ((pte1 & PTE_V) && (pte1 & (PTE_R | PTE_W | PTE_X))) {
             uint32_t perm = pte1 & (PTE_R | PTE_W | PTE_X | PTE_U | PTE_A | PTE_D);
@@ -70,13 +73,15 @@ static int vm_map_page(uint32_t *root, uint32_t va, uint32_t pa, uint32_t flags)
     return 0;
 }
 
-static void vm_map_range_4k(uint32_t *root, uint32_t va, uint32_t pa, uint32_t len, uint32_t flags)
+static int vm_map_range_4k(uint32_t *root, uint32_t va, uint32_t pa, uint32_t len, uint32_t flags)
 {
     uint32_t off = 0;
     while (off < len) {
-        vm_map_page(root, va + off, pa + off, flags);
+        if (vm_map_page(root, va + off, pa + off, flags) < 0)
+            return -1;
         off += PAGE_SIZE;
     }
+    return 0;
 }
 
 static void vm_map_range_4m(uint32_t *root, uint32_t va, uint32_t pa, uint32_t len, uint32_t flags)
@@ -97,15 +102,89 @@ static uint32_t vm_make_satp(uint32_t root_pa)
     return SATP_MODE_SV32 | (root_pa >> 12);
 }
 
+static uint32_t *vm_root_from_satp(uint32_t satp_value)
+{
+    uint32_t ppn = satp_value & SATP_PPN_MASK;
+    return (uint32_t *) (ppn << 12);
+}
+
 void vm_activate(uint32_t satp_value)
 {
     __asm__ __volatile__("csrw satp, %0" ::"r"(satp_value) : "memory");
     __asm__ __volatile__("sfence.vma zero, zero" ::: "memory");
 }
 
-void vm_init(void)
+int vm_query_user_page(uint32_t satp_value, uint32_t va, paddr_t *pa_out, uint32_t *prot_out)
 {
-    paddr_t root_pa = alloc_pages(1);
+    uint32_t *root = vm_root_from_satp(satp_value);
+    uint32_t vpn1 = (va >> 22) & 0x3ffu;
+    uint32_t vpn0 = (va >> 12) & 0x3ffu;
+    uint32_t pte1 = root[vpn1];
+    if (!(pte1 & PTE_V))
+        return 0;
+
+    if (pte1 & (PTE_R | PTE_W | PTE_X)) {
+        uint32_t pa = ((pte1 >> 10) << 12) | (va & 0x003fffffu);
+        if (pa_out)
+            *pa_out = pa;
+        if (prot_out)
+            *prot_out = pte1 & (PTE_R | PTE_W | PTE_X | PTE_U);
+        return 1;
+    }
+
+    uint32_t *l0 = (uint32_t *) ((pte1 >> 10) << 12);
+    uint32_t pte0 = l0[vpn0];
+    if (!(pte0 & PTE_V) || !(pte0 & (PTE_R | PTE_W | PTE_X)))
+        return 0;
+
+    if (pa_out)
+        *pa_out = ((pte0 >> 10) << 12) | (va & 0xfffu);
+    if (prot_out)
+        *prot_out = pte0 & (PTE_R | PTE_W | PTE_X | PTE_U);
+    return 1;
+}
+
+int vm_map_user_page(uint32_t satp_value, uint32_t va, uint32_t pa, uint32_t prot)
+{
+    if (!is_aligned(va, PAGE_SIZE) || !is_aligned(pa, PAGE_SIZE))
+        return -1;
+    uint32_t *root = vm_root_from_satp(satp_value);
+    uint32_t flags = 0;
+    if (prot & VMA_PROT_R)
+        flags |= VM_FLG_R;
+    if (prot & VMA_PROT_W)
+        flags |= VM_FLG_W;
+    if (prot & VMA_PROT_X)
+        flags |= VM_FLG_X;
+    flags |= VM_FLG_U;
+    return vm_map_page(root, va, pa, flags);
+}
+
+int vm_unmap_user_page(uint32_t satp_value, uint32_t va)
+{
+    if (!is_aligned(va, PAGE_SIZE))
+        return -1;
+
+    uint32_t *root = vm_root_from_satp(satp_value);
+    uint32_t vpn1 = (va >> 22) & 0x3ffu;
+    uint32_t vpn0 = (va >> 12) & 0x3ffu;
+    uint32_t pte1 = root[vpn1];
+    if (!(pte1 & PTE_V))
+        return 0;
+    if (pte1 & (PTE_R | PTE_W | PTE_X))
+        return -1;
+
+    uint32_t *l0 = (uint32_t *) ((pte1 >> 10) << 12);
+    l0[vpn0] = 0;
+    __asm__ __volatile__("sfence.vma zero, zero" ::: "memory");
+    return 0;
+}
+
+int vm_init(void)
+{
+    paddr_t root_pa = alloc_pages_try(1);
+    if (!root_pa)
+        return -1;
     kernel_root_pt = (uint32_t *) root_pa;
     memset(kernel_root_pt, 0, PAGE_SIZE);
 
@@ -116,6 +195,7 @@ void vm_init(void)
 
     kernel_satp_value = vm_make_satp((uint32_t) root_pa);
     vm_activate(kernel_satp_value);
+    return 0;
 }
 
 uint32_t vm_kernel_satp(void)
@@ -125,7 +205,9 @@ uint32_t vm_kernel_satp(void)
 
 uint32_t vm_build_user_satp(vaddr_t user_stack_base, paddr_t user_stack_paddr, uint32_t user_stack_pages)
 {
-    paddr_t root_pa = alloc_pages(1);
+    paddr_t root_pa = alloc_pages_try(1);
+    if (!root_pa)
+        return 0;
     uint32_t *root = (uint32_t *) root_pa;
     memset(root, 0, PAGE_SIZE);
     memcpy(root, kernel_root_pt, PAGE_SIZE);
@@ -141,24 +223,42 @@ uint32_t vm_build_user_satp(vaddr_t user_stack_base, paddr_t user_stack_paddr, u
     uint32_t bss_start = (uint32_t) __user_bss_start & ~(PAGE_SIZE - 1u);
     uint32_t bss_end = ((uint32_t) __user_bss_end + PAGE_SIZE - 1u) & ~(PAGE_SIZE - 1u);
 
-    if (kro_end > kro_start)
-        vm_map_range_4k(root, kro_start, kro_start, kro_end - kro_start, VM_FLG_R | VM_FLG_U);
-    if (text_end > text_start)
-        vm_map_range_4k(root, text_start, text_start, text_end - text_start, VM_FLG_R | VM_FLG_X | VM_FLG_U);
-    if (ro_end > ro_start)
-        vm_map_range_4k(root, ro_start, ro_start, ro_end - ro_start, VM_FLG_R | VM_FLG_U);
-    if (data_end > data_start)
-        vm_map_range_4k(root, data_start, data_start, data_end - data_start, VM_FLG_R | VM_FLG_W | VM_FLG_U);
-    if (bss_end > bss_start)
-        vm_map_range_4k(root, bss_start, bss_start, bss_end - bss_start, VM_FLG_R | VM_FLG_W | VM_FLG_U);
+    if (kro_end > kro_start &&
+        vm_map_range_4k(root, kro_start, kro_start, kro_end - kro_start, VM_FLG_R | VM_FLG_U) < 0)
+        goto fail;
+    if (text_end > text_start &&
+        vm_map_range_4k(root,
+                        text_start,
+                        text_start,
+                        text_end - text_start,
+                        VM_FLG_R | VM_FLG_X | VM_FLG_U) < 0)
+        goto fail;
+    if (ro_end > ro_start &&
+        vm_map_range_4k(root, ro_start, ro_start, ro_end - ro_start, VM_FLG_R | VM_FLG_U) < 0)
+        goto fail;
+    if (data_end > data_start &&
+        vm_map_range_4k(root,
+                        data_start,
+                        data_start,
+                        data_end - data_start,
+                        VM_FLG_R | VM_FLG_W | VM_FLG_U) < 0)
+        goto fail;
+    if (bss_end > bss_start &&
+        vm_map_range_4k(root, bss_start, bss_start, bss_end - bss_start, VM_FLG_R | VM_FLG_W | VM_FLG_U) < 0)
+        goto fail;
 
     if (user_stack_pages > 0) {
-        vm_map_range_4k(root,
-                        user_stack_base,
-                        user_stack_paddr,
-                        user_stack_pages * PAGE_SIZE,
-                        VM_FLG_R | VM_FLG_W | VM_FLG_U);
+        if (vm_map_range_4k(root,
+                            user_stack_base,
+                            user_stack_paddr,
+                            user_stack_pages * PAGE_SIZE,
+                            VM_FLG_R | VM_FLG_W | VM_FLG_U) < 0)
+            goto fail;
     }
 
     return vm_make_satp((uint32_t) root_pa);
+
+fail:
+    free_pages(root_pa, 1);
+    return 0;
 }
