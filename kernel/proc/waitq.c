@@ -23,7 +23,7 @@ void waitq_sleep(struct waitq *q)
     if (!q || !current_proc || current_proc == idle_proc)
         return;
 
-    spin_lock(&q->lock);
+    uint32_t s = spin_lock_irqsave(&q->lock);
     if (!waitq_contains(q, current_proc)) {
         for (int i = 0; i < PROC_MAX; i++) {
             if (!q->waiters[i]) {
@@ -32,7 +32,7 @@ void waitq_sleep(struct waitq *q)
             }
         }
     }
-    spin_unlock(&q->lock);
+    spin_unlock_irqrestore(&q->lock, s);
 
     current_proc->state = PROC_BLOCKED;
     yield();
@@ -45,7 +45,7 @@ void waitq_wake_all(struct waitq *q)
     if (!q)
         return;
 
-    spin_lock(&q->lock);
+    uint32_t s = spin_lock_irqsave(&q->lock);
     for (int i = 0; i < PROC_MAX; i++) {
         struct process *p = q->waiters[i];
         if (!p)
@@ -54,5 +54,5 @@ void waitq_wake_all(struct waitq *q)
             p->state = PROC_RUNNABLE;
         q->waiters[i] = NULL;
     }
-    spin_unlock(&q->lock);
+    spin_unlock_irqrestore(&q->lock, s);
 }

@@ -1,6 +1,6 @@
-#include "kernel/event.h"
-#include "kernel/kernel.h"
-#include "kernel/lock.h"
+#include "../include/kernel/event.h"
+#include "../include/kernel/kernel.h"
+#include "../include/kernel/lock.h"
 
 #define KEVENT_Q_CAP 128
 
@@ -22,7 +22,7 @@ void kevent_init(void)
 
 int kevent_push(uint32_t type, uint32_t a, uint32_t b, uint32_t c, uint32_t d)
 {
-    spin_lock(&g_lock);
+    uint32_t s = spin_lock_irqsave(&g_lock);
     uint32_t next = (g_tail + 1) % KEVENT_Q_CAP;
     if (next == g_head) {
         // Drop oldest to keep forward progress under interrupt bursts.
@@ -35,7 +35,7 @@ int kevent_push(uint32_t type, uint32_t a, uint32_t b, uint32_t c, uint32_t d)
     g_q[g_tail].d = d;
     g_q[g_tail].seq = g_seq++;
     g_tail = next;
-    spin_unlock(&g_lock);
+    spin_unlock_irqrestore(&g_lock, s);
     return 0;
 }
 
@@ -43,14 +43,14 @@ int kevent_pop(struct k_event *out)
 {
     if (!out)
         return -1;
-    spin_lock(&g_lock);
+    uint32_t s = spin_lock_irqsave(&g_lock);
     if (g_head == g_tail)
     {
-        spin_unlock(&g_lock);
+        spin_unlock_irqrestore(&g_lock, s);
         return 0;
     }
     *out = g_q[g_head];
     g_head = (g_head + 1) % KEVENT_Q_CAP;
-    spin_unlock(&g_lock);
+    spin_unlock_irqrestore(&g_lock, s);
     return 1;
 }

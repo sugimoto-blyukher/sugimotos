@@ -126,13 +126,16 @@ static void handle_external_interrupt(void)
         if (irq == 0)
             break;
 
+        // if (irq != 0) printf("trap: ext-irq %d\n", (int)irq);
+
         // QEMU virt maps virtio-mmio interrupts over low source IDs.
-        if (irq <= 8)
+        if (irq <= 64) {
+            // We could add more specific checks here if we had base addresses,
+            // but the handlers already check their respective device bases.
             virtio_input_handle_irq();
-        if (irq <= 32)
             blk_handle_irq();
-        if (irq <= 32)
             virtio_gpu_handle_irq();
+        }
 
         plic_complete(irq);
     }

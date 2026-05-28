@@ -134,7 +134,7 @@ static int root_file_count;
 
 static uint8_t block_buf[4096];
 static uint8_t block_buf2[4096];
-static uint8_t inode_buf[512];
+static uint8_t inode_buf[4096];
 
 static uint32_t str_len(const char *s)
 {

@@ -173,6 +173,7 @@ void fs_init(void)
         inodes[hello].size = n;
     }
 
+    /*
     int rc = ext4_mount();
     ext4_ready = (rc == 0);
     if (!ext4_ready) {
@@ -180,6 +181,9 @@ void fs_init(void)
     } else {
         printf("ext4 mount ok\n");
     }
+    */
+    printf("fs: ext4 mount skipped (temporary)\n");
+    ext4_ready = false;
     fs_initialized = true;
 }
 

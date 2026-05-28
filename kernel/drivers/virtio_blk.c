@@ -134,11 +134,14 @@ int blk_init(void)
         uint32_t device = *(volatile uint32_t *) (base + MMIO_DEVICE_ID);
         if (magic == 0x74726976 && (version == 1 || version == 2) && device == 2) {
             virtio_base = base;
+            printf("virtio-blk: found device at %x (irq %d)\n", base, i + 1);
             break;
         }
     }
-    if (!virtio_base)
+    if (!virtio_base) {
+        printf("virtio-blk: device not found\n");
         return -1;
+    }
 
     mmio_write(MMIO_STATUS, 0);
     mmio_write(MMIO_STATUS, VIRTIO_STATUS_ACKNOWLEDGE);
@@ -152,8 +155,10 @@ int blk_init(void)
     mmio_write(MMIO_STATUS, VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER |
                                 VIRTIO_STATUS_FEATURES_OK);
 
-    if (!(mmio_read(MMIO_STATUS) & VIRTIO_STATUS_FEATURES_OK))
+    if (!(mmio_read(MMIO_STATUS) & VIRTIO_STATUS_FEATURES_OK)) {
+        printf("virtio-blk: features not ok\n");
         return -1;
+    }
 
     mmio_write(MMIO_QUEUE_SEL, 0);
     if (mmio_read(MMIO_QUEUE_NUM_MAX) < VIRTQ_NUM)
@@ -181,6 +186,7 @@ int blk_init(void)
     blk_ready = true;
     memset(blk_slots, 0, sizeof(blk_slots));
     waitq_init(&blk_waitq);
+    printf("virtio-blk: init ok\n");
     return 0;
 }
 
@@ -191,7 +197,7 @@ int blk_read(uint32_t sector, void *buf)
 
     int slot_idx = -1;
     while (slot_idx < 0) {
-        spin_lock(&blk_lock);
+        uint32_t s = spin_lock_irqsave(&blk_lock);
         blk_process_used_locked();
         for (int i = 0; i < BLK_REQ_MAX; i++) {
             if (!blk_slots[i].in_use) {
@@ -202,7 +208,7 @@ int blk_read(uint32_t sector, void *buf)
                 break;
             }
         }
-        spin_unlock(&blk_lock);
+        spin_unlock_irqrestore(&blk_lock, s);
         if (slot_idx >= 0)
             break;
         if (current_proc)
@@ -221,7 +227,7 @@ int blk_read(uint32_t sector, void *buf)
     uint16_t d1 = (uint16_t) (head + 1);
     uint16_t d2 = (uint16_t) (head + 2);
 
-    spin_lock(&blk_lock);
+    uint32_t s = spin_lock_irqsave(&blk_lock);
     desc[d0].addr = (uint64_t) (uint32_t) &slot->req;
     desc[d0].len = sizeof(slot->req);
     desc[d0].flags = VIRTQ_DESC_F_NEXT;
@@ -242,20 +248,20 @@ int blk_read(uint32_t sector, void *buf)
     avail.idx++;
     __sync_synchronize();
     mmio_write(MMIO_QUEUE_NOTIFY, 0);
-    spin_unlock(&blk_lock);
+    spin_unlock_irqrestore(&blk_lock, s);
 
     while (1) {
-        spin_lock(&blk_lock);
+        s = spin_lock_irqsave(&blk_lock);
         blk_process_used_locked();
         if (slot->done) {
             int ok = (slot->status == 0);
             slot->done = 0;
             slot->in_use = 0;
-            spin_unlock(&blk_lock);
+            spin_unlock_irqrestore(&blk_lock, s);
             waitq_wake_all(&blk_waitq);
             return ok ? 0 : -1;
         }
-        spin_unlock(&blk_lock);
+        spin_unlock_irqrestore(&blk_lock, s);
         if (current_proc)
             waitq_sleep(&blk_waitq);
         else
@@ -271,8 +277,8 @@ void blk_handle_irq(void)
     if (!st)
         return;
     mmio_write(MMIO_INTERRUPT_ACK, st);
-    spin_lock(&blk_lock);
+    uint32_t s = spin_lock_irqsave(&blk_lock);
     blk_process_used_locked();
-    spin_unlock(&blk_lock);
+    spin_unlock_irqrestore(&blk_lock, s);
     waitq_wake_all(&blk_waitq);
 }

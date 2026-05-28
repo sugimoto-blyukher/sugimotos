@@ -186,6 +186,10 @@ static int vg_submit(const void *req, uint32_t req_len, void *resp, uint32_t res
     if (!vg_ready || !req || req_len == 0 || !resp || resp_len == 0)
         return -1;
 
+    // Zero out descriptors to be safe
+    memset(&vg_desc[0], 0, sizeof(vg_desc[0]));
+    memset(&vg_desc[1], 0, sizeof(vg_desc[1]));
+
     vg_desc[0].addr = (uint64_t) (uint32_t) req;
     vg_desc[0].len = req_len;
     vg_desc[0].flags = VG_DESC_F_NEXT;
@@ -196,6 +200,7 @@ static int vg_submit(const void *req, uint32_t req_len, void *resp, uint32_t res
     vg_desc[1].flags = VG_DESC_F_WRITE;
     vg_desc[1].next = 0;
 
+    __sync_synchronize();
     uint16_t head = 0;
     vg_avail.ring[vg_avail.idx % VG_QNUM] = head;
     __sync_synchronize();
@@ -203,15 +208,40 @@ static int vg_submit(const void *req, uint32_t req_len, void *resp, uint32_t res
     __sync_synchronize();
     vg_mmio_write(VG_MMIO_QUEUE_NOTIFY, 0);
 
-    while (vg_last_used == vg_used.idx) {
-        if (current_proc)
-            waitq_sleep(&vg_waitq);
-        else
-            __asm__ __volatile__("wfi");
+    // Poll for status change with busy-wait to avoid deadlock during init
+    int timeout = 20000000;
+    while (timeout > 0) {
+        __sync_synchronize();
+        if (vg_last_used != vg_used.idx) break;
+        __asm__ __volatile__("nop");
+        timeout--;
     }
-    uint16_t slot = vg_last_used % VG_QNUM;
-    if (vg_used.ring[slot].id != head)
+
+    if (vg_last_used == vg_used.idx) {
+        // If busy-wait failed, try one more time with sleep if we have a process
+        if (current_proc && current_proc != idle_proc) {
+            timeout = 100;
+            while (vg_last_used == vg_used.idx && timeout > 0) {
+                waitq_sleep(&vg_waitq);
+                timeout--;
+            }
+        }
+    }
+
+    if (vg_last_used == vg_used.idx) {
+        printf("virtio-gpu: command timeout (type=%x). status=%x, used.idx=%d, last_used=%d\n", 
+               ((struct virtio_gpu_ctrl_hdr*)req)->type,
+               vg_mmio_read(VG_MMIO_STATUS),
+               vg_used.idx, vg_last_used);
         return -1;
+    }
+
+    uint16_t slot = vg_last_used % VG_QNUM;
+    uint32_t id = vg_used.ring[slot].id;
+    if (id != head) {
+        printf("virtio-gpu: response ID mismatch (expected %d, got %d)\n", head, (int)id);
+        return -1;
+    }
     vg_last_used++;
     return 0;
 }
@@ -345,14 +375,17 @@ int virtio_gpu_init(void)
     for (int i = 0; i < VIRTIO_MMIO_SLOTS; i++) {
         uint32_t base = VIRTIO_MMIO_BASE + i * VIRTIO_MMIO_STEP;
         uint32_t magic = *(volatile uint32_t *) (base + VG_MMIO_MAGIC_VALUE);
-        uint32_t version = *(volatile uint32_t *) (base + VG_MMIO_VERSION);
-        uint32_t dev = *(volatile uint32_t *) (base + VG_MMIO_DEVICE_ID);
-        if (magic == 0x74726976 && (version == 1 || version == 2) && dev == 16) {
-            vg_base = base;
-            break;
+        if (magic == 0x74726976) {
+            uint32_t dev = *(volatile uint32_t *) (base + VG_MMIO_DEVICE_ID);
+            if (dev == 16) {
+                vg_base = base;
+                printf("virtio-gpu: found device at %x\n", base);
+                break;
+            }
         }
     }
     if (!vg_base) {
+        printf("virtio-gpu: device not found\n");
         vg_last_error = 1;
         return -1;
     }
@@ -389,7 +422,9 @@ int virtio_gpu_init(void)
     }
 
     vg_mmio_write(VG_MMIO_QUEUE_SEL, 0);
-    if (vg_mmio_read(VG_MMIO_QUEUE_NUM_MAX) < VG_QNUM) {
+    uint32_t qmax = vg_mmio_read(VG_MMIO_QUEUE_NUM_MAX);
+    if (qmax < VG_QNUM) {
+        printf("virtio-gpu: queue size too small (%d < %d)\n", (int)qmax, VG_QNUM);
         vg_last_error = 2;
         return -1;
     }
@@ -399,6 +434,8 @@ int virtio_gpu_init(void)
     memset(&vg_avail, 0, sizeof(vg_avail));
     memset((void *) &vg_used, 0, sizeof(vg_used));
     vg_last_used = 0;
+    vg_avail.flags = 0;
+    vg_avail.idx = 0;
 
     vg_mmio_write(VG_MMIO_QUEUE_DESC_LOW, (uint32_t) (uint64_t) vg_desc);
     vg_mmio_write(VG_MMIO_QUEUE_DESC_HIGH, 0);
@@ -408,14 +445,19 @@ int virtio_gpu_init(void)
     vg_mmio_write(VG_MMIO_QUEUE_DEVICE_HIGH, 0);
     vg_mmio_write(VG_MMIO_QUEUE_READY, 1);
 
+    printf("virtio-gpu: queue 0 ready\n");
+
     vg_mmio_write(VG_MMIO_STATUS,
                   VG_STATUS_ACKNOWLEDGE | VG_STATUS_DRIVER | VG_STATUS_FEATURES_OK | VG_STATUS_DRIVER_OK);
     vg_ready = 1;
     waitq_init(&vg_waitq);
 
+    printf("virtio-gpu: status DRIVER_OK\n");
+
     struct virtio_gpu_resp_display_info dinfo;
     memset(&dinfo, 0, sizeof(dinfo));
     if (vg_cmd_get_display_info(&dinfo) < 0) {
+        printf("virtio-gpu: get_display_info failed (type=%x)\n", dinfo.hdr.type);
         vg_ready = 0;
         vg_last_error = 3;
         return -1;
@@ -427,10 +469,12 @@ int virtio_gpu_init(void)
         if (dinfo.pmodes[i].enabled && dinfo.pmodes[i].rect.width > 0 && dinfo.pmodes[i].rect.height > 0) {
             w = dinfo.pmodes[i].rect.width;
             h = dinfo.pmodes[i].rect.height;
+            printf("virtio-gpu: mode %d: %dx%d enabled\n", i, (int)w, (int)h);
             break;
         }
     }
     if (w == 0 || h == 0) {
+        printf("virtio-gpu: no modes enabled, using fallback 640x480\n");
         w = 640;
         h = 480;
     }
@@ -447,7 +491,9 @@ int virtio_gpu_init(void)
     uint32_t bytes = vg_pitch_px * vg_height_px;
     vg_backbuffer_pages = (bytes + PAGE_SIZE - 1u) / PAGE_SIZE;
     paddr_t bb_pa = alloc_pages_try(vg_backbuffer_pages);
-    if (!bb_pa) {
+    printf("virtio-gpu: allocating %d pages for backbuffer: %x\n", (int)vg_backbuffer_pages, (uint32_t)bb_pa);
+    if (!bb_pa || bb_pa < 0x80000000u) {
+        printf("virtio-gpu: backbuffer alloc failed or invalid (%x)\n", (uint32_t)bb_pa);
         vg_ready = 0;
         vg_last_error = 9;
         return -1;
@@ -455,12 +501,14 @@ int virtio_gpu_init(void)
     vg_backbuffer = (uint32_t *) bb_pa;
 
     if (vg_cmd_resource_create_2d(vg_resource_id, vg_width_px, vg_height_px) < 0) {
+        printf("virtio-gpu: resource_create_2d failed\n");
         vg_release_backbuffer();
         vg_ready = 0;
         vg_last_error = 4;
         return -1;
     }
     if (vg_cmd_resource_attach_backing(vg_resource_id, vg_backbuffer, bytes) < 0) {
+        printf("virtio-gpu: attach_backing failed\n");
         vg_cmd_resource_unref(vg_resource_id);
         vg_release_backbuffer();
         vg_ready = 0;
@@ -468,6 +516,7 @@ int virtio_gpu_init(void)
         return -1;
     }
     if (vg_cmd_set_scanout(vg_resource_id, vg_width_px, vg_height_px) < 0) {
+        printf("virtio-gpu: set_scanout failed\n");
         vg_cmd_resource_unref(vg_resource_id);
         vg_release_backbuffer();
         vg_ready = 0;
@@ -478,6 +527,8 @@ int virtio_gpu_init(void)
     memset(vg_backbuffer, 0, bytes);
     virtio_gpu_present();
     vg_last_error = 0;
+    printf("virtio-gpu: init ok %dx%d (resource 1)\n", (int)w, (int)h);
+    printf("virtio-gpu: returning to %p\n", __builtin_return_address(0));
     return 0;
 }
 

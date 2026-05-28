@@ -100,20 +100,17 @@ static void init_process_common(struct process *proc, int pid, int parent_pid, b
 
 static void init_switch_context(struct process *proc, uint32_t ra)
 {
+    // Use the end of the process's own stack buffer
     uint32_t *sp = (uint32_t *) &proc->stack[sizeof(proc->stack)];
-    *--sp = 0;
-    *--sp = 0;
-    *--sp = 0;
-    *--sp = 0;
-    *--sp = 0;
-    *--sp = 0;
-    *--sp = 0;
-    *--sp = 0;
-    *--sp = 0;
-    *--sp = 0;
-    *--sp = 0;
-    *--sp = 0;
-    *--sp = ra;
+    
+    // Clear the stack frame for safety
+    for (int i = 0; i < 13; i++) {
+        *--sp = 0;
+    }
+    
+    // Set initial RA at the correct offset (0*4 from sp in switch_context)
+    sp[0] = ra;
+    
     proc->sp = (uint32_t) sp;
 }
 
@@ -257,9 +254,15 @@ __attribute__((naked)) static void resume_from_trap(void)
         "li t1, %[is_user_offset]\n"
         "add t1, a6, t1\n"
         "lw t1, 0(t1)\n"
-        "bnez t1, 1f\n"
+        "beqz t1, 4f\n"
+        "li t2, %[stack_top_offset]\n"
+        "add t2, a6, t2\n"
+        "csrw sscratch, t2\n"
+        "j 5f\n"
+        "4:\n"
         "ori t0, t0, 0x100\n"
-        "1:\n"
+        "csrw sscratch, zero\n"
+        "5:\n"
         "csrw sstatus, t0\n"
 
         "li t0, %[tf_offset]\n"
@@ -299,8 +302,9 @@ __attribute__((naked)) static void resume_from_trap(void)
         "sret\n"
         :
         : [sepc_offset] "i" (offsetof(struct process, sepc)),
-          [is_user_offset] "i" (offsetof(struct process, is_user)),
-          [tf_offset] "i" (offsetof(struct process, trap_frame)),
+        [is_user_offset] "i" (offsetof(struct process, is_user)),
+        [stack_top_offset] "i" (offsetof(struct process, stack) + 32768),
+        [tf_offset] "i" (offsetof(struct process, trap_frame)),
           [ra] "i" (offsetof(struct trap_frame, ra)),
           [gp] "i" (offsetof(struct trap_frame, gp)),
           [tp] "i" (offsetof(struct trap_frame, tp)),

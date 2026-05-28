@@ -62,11 +62,6 @@ void yield(void)
 
     vm_activate(next->satp);
 
-    __asm__ __volatile__(
-        "csrw sscratch, %[sscratch]\n"
-        :
-        : [sscratch] "r" ((uint32_t) &next->stack[sizeof(next->stack)]));
-
     struct process *prev = current_proc;
     current_proc = next;
     switch_context(&prev->sp, &next->sp);

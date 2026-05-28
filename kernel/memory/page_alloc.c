@@ -207,12 +207,13 @@ paddr_t alloc_pages_try(uint32_t n)
     }
 
     paddr_t paddr = next_paddr;
-    next_paddr += n * PAGE_SIZE;
+    paddr_t new_next = next_paddr + n * PAGE_SIZE;
 
-    if (next_paddr > meta_top) {
+    if (new_next > meta_top || new_next < next_paddr) { // Check for overflow and OOM
         spin_unlock(&alloc_lock);
         return 0;
     }
+    next_paddr = new_next;
 
     memset((void *) paddr, 0, n * PAGE_SIZE);
     for (uint32_t i = 0; i < n; i++) {

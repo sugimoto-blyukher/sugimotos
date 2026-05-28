@@ -5,6 +5,9 @@ __attribute__((aligned(4))) void kernel_entry(void)
 {
     __asm__ __volatile__(
         "csrrw sp, sscratch, sp\n"
+        "bnez sp, 1f\n"
+        "csrrw sp, sscratch, sp\n"
+        "1:\n"
         "addi sp, sp, -4 * 31\n"
         "sw ra,  4 * 0(sp)\n"
         "sw gp,  4 * 1(sp)\n"
@@ -36,12 +39,16 @@ __attribute__((aligned(4))) void kernel_entry(void)
         "sw s9,  4 * 27(sp)\n"
         "sw s10, 4 * 28(sp)\n"
         "sw s11, 4 * 29(sp)\n"
-        "csrr a0, sscratch\n"
-        "sw a0,  4 * 30(sp)\n"
-        "addi a0, sp, 4 * 31\n"
-        "csrw sscratch, a0\n"
+        
+        "csrr t0, sscratch\n"
+        "bnez t0, 2f\n"
+        "addi t0, sp, 4 * 31\n"
+        "2:\n"
+        "sw t0, 4 * 30(sp)\n"
+        
         "mv a0, sp\n"
         "call handle_trap\n"
+        
         "lw ra,  4 * 0(sp)\n"
         "lw gp,  4 * 1(sp)\n"
         "lw tp,  4 * 2(sp)\n"
@@ -72,6 +79,15 @@ __attribute__((aligned(4))) void kernel_entry(void)
         "lw s9,  4 * 27(sp)\n"
         "lw s10, 4 * 28(sp)\n"
         "lw s11, 4 * 29(sp)\n"
+        
+        "csrr t0, sstatus\n"
+        "andi t0, t0, 0x100\n"
+        "bnez t0, 3f\n"
+        "addi t0, sp, 4 * 31\n"
+        "csrw sscratch, t0\n"
+        "3:\n"
+        
         "lw sp,  4 * 30(sp)\n"
-        "sret\n");
+        "sret\n"
+    );
 }

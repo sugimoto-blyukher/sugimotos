@@ -19,12 +19,12 @@ static inline uint32_t plic_read(uint32_t addr)
 void plic_init(void)
 {
     // Virt machine routes virtio-mmio irqs over low source IDs.
-    for (uint32_t irq = 1; irq <= 32; irq++)
+    for (uint32_t irq = 1; irq <= 64; irq++)
         plic_write(PLIC_PRIORITY(irq), 1);
 
-    // Enable all 32 lower sources for S-mode context0 (single hart build).
+    // Enable all 64 lower sources for S-mode context0 (single hart build).
     plic_write(PLIC_SENABLE + 0, 0xffffffffu);
-    plic_write(PLIC_SENABLE + 4, 0x00000000u);
+    plic_write(PLIC_SENABLE + 4, 0xffffffffu);
 
     // Accept all priorities > 0.
     plic_write(PLIC_SPRIORITY, 0);

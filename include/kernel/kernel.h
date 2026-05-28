@@ -81,7 +81,7 @@ struct trap_frame {
         __asm__ __volatile__("csrw " #reg ", %0" ::"r"(__tmp)); \
     } while (0)
 
-#define PROC_MAX 32
+#define PROC_MAX 8
 #define FD_MAX 16
 #define PROC_VMA_MAX 16
 #define PROC_UNUSED 0
@@ -120,7 +120,7 @@ struct process {
     vaddr_t user_stack_base;
     paddr_t user_stack_paddr;
     uint32_t user_stack_pages;
-    uint8_t stack[8192];
+    uint8_t stack[32768];
     bool has_trap_frame;
     uint32_t sepc;
     uint32_t satp;
