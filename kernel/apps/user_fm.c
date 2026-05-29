@@ -11,6 +11,10 @@ void fm_run(void) {
 }
 
 void filedb_add(const char *path) {
+    for (int i = 0; i < g_file_db_count; i++) {
+        if (str_eq(g_file_db[i], path))
+            return;
+    }
     if (g_file_db_count >= FILE_DB_MAX) return;
     str_copy_lim(g_file_db[g_file_db_count++], path, FM_NAME_MAX);
 }

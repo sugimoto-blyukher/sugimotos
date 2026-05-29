@@ -166,7 +166,17 @@ static void term_view_reset(void) {
 #endif
 
 void shell_help(void) {
-    u_puts("commands: help, ls, cat, touch, write, rm, gui, img, fm, shutdown, exit\n");
+    u_puts("commands: help, ls, cat, touch, write, rm, gui, img, fm, shutdown\n");
+}
+
+void shell_touch(const char *path) {
+    int fd = u_open(path, O_CREAT | O_RDWR);
+    if (fd < 0) {
+        u_puts("touch: fail\n");
+        return;
+    }
+    u_close(fd);
+    filedb_add(path);
 }
 
 void shell_ls(void) {
@@ -184,6 +194,33 @@ void shell_cat(const char *path) {
         for (int i = 0; i < n; i++) u_putchar(g_iobuf[i]);
     }
     u_close(fd);
+    putchar('\n');
+}
+
+void shell_rm(const char *path) {
+    if (u_unlink(path) < 0) { u_puts("rm: fail\n"); return; }
+    filedb_remove(path);
+}
+
+void shell_write(const char *path, int argc, char **argv) {
+    int fd = u_open(path, O_CREAT | O_TRUNC | O_WRONLY);
+    if (fd < 0) { u_puts("write: fail\n"); return; }
+    for (int i = 2; i < argc; i++) {
+        if (i > 2)
+            u_write(fd, " ", 1);
+        u_write(fd, argv[i], str_len(argv[i]));
+    }
+    u_close(fd);
+    filedb_add(path);
+}
+
+void shell_fm(void) {
+    fm_run();
+}
+
+void shell_img(const char *path) {
+    if (img_open_path(path) < 0)
+        u_puts("img: fail\n");
 }
 
 void user_init_entry(void)
@@ -224,11 +261,19 @@ void user_init_entry(void)
             if (argc > 0) {
                 if (str_eq(argv[0], "help")) shell_help();
                 else if (str_eq(argv[0], "ls")) shell_ls();
-                else if (str_eq(argv[0], "cat")) { if (argc > 1) shell_cat(argv[1]); }
+                else if (str_eq(argv[0], "cat")) { if (argc > 1) shell_cat(argv[1]); else u_puts("usage: cat <path>\n"); }
+                else if (str_eq(argv[0], "touch")) { if (argc > 1) shell_touch(argv[1]); else u_puts("usage: touch <path>\n"); }
                 else if (str_eq(argv[0], "gui")) {
                     if (g_main_win <= 0) g_main_win = u_wm_create("terminal", 520, 300);
                     u_wm_render();
                 }
+                else if (str_eq(argv[0], "write")) {
+                    if (argc > 2) shell_write(argv[1], argc, argv);
+                    else u_puts("usage: write <path> <text>\n");
+                }
+                else if (str_eq(argv[0], "img")) { if (argc > 1) shell_img(argv[1]); else u_puts("usage: img <path>\n"); }
+                else if (str_eq(argv[0], "fm")) shell_fm();
+                else if (str_eq(argv[0], "rm")) { if (argc > 1) shell_rm(argv[1]); else u_puts("usage: rm <path>\n"); }
                 else if (str_eq(argv[0], "shutdown")) u_shutdown();
                 else u_puts("unknown command\n");
             }
