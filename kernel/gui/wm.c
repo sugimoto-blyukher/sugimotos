@@ -56,40 +56,14 @@ struct wm_window {
 static struct wm_window wm_windows[WM_MAX_WINDOWS];
 static int wm_next_id = 1;
 static int wm_next_z = 1;
-/*
-static struct wm_cell wm_fb[WM_TEXT_SCREEN_H][WM_TEXT_SCREEN_W];
-*/
 static int wm_screen_w = WM_TEXT_SCREEN_W;
 static int wm_screen_h = WM_TEXT_SCREEN_H;
 static int wm_cursor_x;
 static int wm_cursor_y;
 static int wm_cursor_visible;
-/*
-static int wm_drag_id;
-static int wm_drag_mode;
-static int wm_drag_off_x;
-static int wm_drag_off_y;
-static int wm_drag_start_w;
-static int wm_drag_start_h;
-static int wm_desktop_id;
-*/
 static int wm_focus_id;
-/*
-static int wm_capture_id;
-*/
 static uint64_t wm_event_tick;
 static int wm_gpu_ready;
-/*
-static int vi_ready;
-static int vi_rel_dx;
-static int vi_rel_dy;
-static int vi_wheel;
-static int vi_btn_left_down;
-static int vi_shift_down;
-static int vi_ctrl_down;
-static int wm_input_debug = 1;
-static int wm_motion_debug_budget = 64;
-*/
 static int wm_dirty_valid;
 static int wm_dirty_x0;
 static int wm_dirty_y0;
@@ -154,13 +128,6 @@ static void wm_mark_dirty_taskbar(void)
     wm_mark_dirty_rect(0, y0, wm_screen_w, wm_screen_h - y0);
 }
 
-/*
-static void wm_mark_dirty_cursor_xy(int x, int y)
-{
-    wm_mark_dirty_rect(x - 1, y - 1, 18, 18);
-}
-*/
-
 static void wm_mark_dirty_full(void)
 {
     wm_dirty_valid = 1;
@@ -196,61 +163,6 @@ static int wm_usable_h(void)
     return WM_TEXT_SCREEN_H - 1;
 }
 
-/*
-static int wm_gpu_border_for_window(const struct wm_window *w)
-{
-    int ww = w->w;
-    int wh = w->h;
-    return (ww > 160 || wh > 120) ? 3 : 2;
-}
-
-static int wm_gpu_title_h_for_window(const struct wm_window *w, int border)
-{
-    int wh = w->h;
-    int title_h = wh / 8;
-    if (title_h < 18) title_h = 18;
-    if (title_h > 34) title_h = 34;
-    if (title_h >= wh - border * 2) title_h = wh - border * 2 - 1;
-    if (title_h < 6) title_h = 6;
-    return title_h;
-}
-
-static int wm_gpu_close_button_rect(const struct wm_window *w, int *x, int *y, int *size)
-{
-    int border = wm_gpu_border_for_window(w);
-    int title_h = wm_gpu_title_h_for_window(w, border);
-    int btn_size = title_h - 6;
-    if (btn_size < 10) btn_size = 10;
-    if (btn_size > 18) btn_size = 18;
-    int bx = w->x + w->w - border - 4 - btn_size;
-    int by = w->y + border + (title_h - btn_size) / 2;
-    if (bx <= w->x + border + 2 || by < w->y + border) return 0;
-    if (bx + btn_size >= w->x + w->w - border) return 0;
-    if (by + btn_size > w->y + border + title_h) return 0;
-    *x = bx;
-    *y = by;
-    *size = btn_size;
-    return 1;
-}
-*/
-
-/*
-static int wm_close_button_hit(const struct wm_window *w, int px, int py)
-{
-    if (!w || !w->used || !w->visible) return 0;
-    if (px < w->x || py < w->y || px >= w->x + w->w || py >= w->y + w->h) return 0;
-    if (wm_gpu_ready) {
-        int bx, by, bs;
-        if (!wm_gpu_close_button_rect(w, &bx, &by, &bs)) return 0;
-        return (px >= bx && px < bx + bs && py >= by && py < by + bs) ? 1 : 0;
-    }
-    if (py != w->y || w->w < 7) return 0;
-    int bx0 = w->x + w->w - 4;
-    int bx1 = w->x + w->w - 2;
-    return (px >= bx0 && px <= bx1) ? 1 : 0;
-}
-*/
-
 int wm_screen_width(void) { return wm_screen_w; }
 int wm_screen_height(void) { return wm_screen_h; }
 
@@ -260,16 +172,6 @@ static int vi_u32_to_s32(uint32_t v)
     return (int) v;
 }
 
-/*
-static void wm_plot_color(int x, int y, char c, int fg, int bg)
-{
-    if (x < 0 || y < 0 || x >= WM_TEXT_SCREEN_W || y >= WM_TEXT_SCREEN_H) return;
-    wm_fb[y][x].ch = c;
-    wm_fb[y][x].fg = (unsigned char) fg;
-    wm_fb[y][x].bg = (unsigned char) bg;
-}
-*/
-
 static struct wm_window *wm_find(int id)
 {
     for (int i = 0; i < WM_MAX_WINDOWS; i++) {
@@ -277,13 +179,6 @@ static struct wm_window *wm_find(int id)
     }
     return NULL;
 }
-
-/*
-static int wm_event_count(const struct wm_window *w)
-{
-    return (w->ev_tail - w->ev_head + WM_EVENT_RING_SIZE) % WM_EVENT_RING_SIZE;
-}
-*/
 
 static void wm_queue_event(struct wm_window *w, uint32_t type, uint32_t window_id, uint32_t a, uint32_t b, uint32_t c, uint32_t d)
 {

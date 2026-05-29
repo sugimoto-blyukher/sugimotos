@@ -8,3 +8,5 @@
 *.log
 *.pcap
 *.ext4
+kernel.elf
+kernel.map
