@@ -24,7 +24,8 @@ static void fatal_boot_error(const char *msg)
 
 static void idle_entry(void)
 {
-    while (1) {
+    while (1)
+    {
         __asm__ __volatile__("wfi");
         yield();
     }
@@ -32,7 +33,8 @@ static void idle_entry(void)
 
 static int has_live_app_proc(void)
 {
-    for (int i = 0; i < PROC_MAX; i++) {
+    for (int i = 0; i < PROC_MAX; i++)
+    {
         struct process *p = &procs[i];
         if (p->pid == 0)
             continue;
@@ -44,10 +46,15 @@ static int has_live_app_proc(void)
 
 void kernel_main(void)
 {
-    memset(__bss, 0, (size_t) __bss_end - (size_t) __bss);
-    printf("\n--- SUGIMOTOS KERNEL STARTING ---\n");
+    memset(__bss, 0, (size_t)__bss_end - (size_t)__bss);
+    printf("  _____ _    _  _____ _____ __  __  ____ _______ ____   _____ \n");
+    printf(" / ____| |  | |/ ____|_   _|  \\/  |/ __ \\__   __/ __ \\ / ____|\n");
+    printf("| (___ | |  | | |  __  | | | \\  / | |  | | | | | |  | | (___  \n");
+    printf(" \\___ \\| |  | | | |_ | | | | |\\/| | |  | | | | | |  | |\\___ \\ \n");
+    printf(" ____) | |__| | |__| |_| |_| |  | | |__| | | | | |__| |____) |\n");
+    printf("|_____/ \\____/ \\_____|_____|_|  |_|\\____/  |_|  \\____/|_____/ \n");
 
-    WRITE_CSR(stvec, (uint32_t) kernel_entry);
+    WRITE_CSR(stvec, (uint32_t)kernel_entry);
     WRITE_CSR(sscratch, 0);
     WRITE_CSR(sie, 0);
     WRITE_CSR(sstatus, READ_CSR(sstatus) & ~0x2u);
@@ -61,31 +68,33 @@ void kernel_main(void)
         fatal_boot_error("kernel: vm_init failed");
 
     printf("kernel: creating idle process...\n");
-    idle_proc = create_process((uint32_t) idle_entry);
+    idle_proc = create_process((uint32_t)idle_entry);
     if (!idle_proc)
         fatal_boot_error("kernel: failed to create idle process");
     current_proc = idle_proc;
 
     printf("kernel: enabling interrupts...\n");
-    WRITE_CSR(sie, (1u << 9)); // SEIE
+    WRITE_CSR(sie, (1u << 9));                    // SEIE
     WRITE_CSR(sstatus, READ_CSR(sstatus) | 0x2u); // SIE
 
     printf("kernel: initializing fs...\n");
     fs_init();
 
     printf("kernel: creating shell process...\n");
-    if (!create_process((uint32_t) user_init_entry))
+    if (!create_process((uint32_t)user_init_entry))
         printf("create_process failed\n");
 
     printf("kernel: entering scheduler loop...\n");
-    while (1) {
+    while (1)
+    {
         proc_reap_orphan_zombies();
-        if (!has_live_app_proc()) {
+        if (!has_live_app_proc())
+        {
             printf("kernel: respawn shell init (last trap scause=%x stval=%x sepc=%x)\n",
                    g_last_user_scause,
                    g_last_user_stval,
                    g_last_user_sepc);
-            (void) create_process((uint32_t) user_init_entry);
+            (void)create_process((uint32_t)user_init_entry);
         }
         yield();
     }

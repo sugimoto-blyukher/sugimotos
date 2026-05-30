@@ -69,6 +69,7 @@ int u_getchar(void);
 #define u_read fs_read
 #define u_write fs_write
 #define u_unlink fs_unlink
+#define u_listdir fs_listdir
 #define u_rename fs_rename
 #define u_mmap proc_mmap
 #define u_munmap proc_munmap

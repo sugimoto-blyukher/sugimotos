@@ -180,8 +180,14 @@ void shell_touch(const char *path) {
 }
 
 void shell_ls(void) {
-    for (int i = 0; i < g_file_db_count; i++) {
-        u_puts(g_file_db[i]); u_putchar('\n');
+    int n = u_listdir(g_iobuf, sizeof(g_iobuf));
+    if (n < 0) {
+        u_puts("ls: fail\n");
+        return;
+    }
+
+    for (int i = 0; i < n; i++) {
+        u_putchar(g_iobuf[i]);
     }
 }
 
@@ -234,8 +240,8 @@ void user_init_entry(void)
     g_term_view_len = 0; g_term_view[0] = '\0';
     history_init(&g_hist);
     g_file_db_count = 0;
-    filedb_add("/ext_hello.txt");
-    filedb_add("/ext_note.txt");
+    //filedb_add("/ext_hello.txt");
+    //filedb_add("/ext_note.txt");
 
 #if USER_INIT_AUTOSTART_GUI
     printf("shell: creating terminal window...\n");
