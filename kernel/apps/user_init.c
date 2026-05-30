@@ -254,7 +254,7 @@ void user_init_entry(void)
     u_wm_render();
 #endif
 
-    u_puts("k> ");
+    u_puts("kernel> ");
     int len = 0;
     while (1) {
         int ch = u_getchar();

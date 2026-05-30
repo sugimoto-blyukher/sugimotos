@@ -184,6 +184,10 @@ void handle_syscall(struct trap_frame *f, uint32_t user_pc)
             f->a0 = (uint32_t) fs_read((int) f->a0, (void *) f->a1, f->a2);
             break;
         case SYS_WRITE:
+            if (f->a2 != 0 && !proc_user_readable_ok(f->a1, f->a2)) {
+                syscall_fail(f);
+                break;
+            }
             f->a0 = (uint32_t) fs_write((int) f->a0, (const void *) f->a1, f->a2);
             break;
         case SYS_UNLINK:
