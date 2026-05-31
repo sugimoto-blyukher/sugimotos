@@ -1,6 +1,7 @@
 #pragma once
 
-#include "kernel/kernel.h"
+#include "common.h"
+#include "kernel/trap.h"
 
 #define SYS_PUTCHAR 1
 #define SYS_YIELD 2

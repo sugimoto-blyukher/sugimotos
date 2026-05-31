@@ -1,6 +1,13 @@
-#include "../include/kernel/kernel.h"
-#include "../include/kernel/event.h"
+#include "arch/csr.h"
+#include "kernel/event.h"
+#include "kernel/fs.h"
+#include "kernel/proc.h"
 #include "kernel/plic.h"
+#include "kernel/sbi.h"
+#include "kernel/trap.h"
+#include "kernel/vm.h"
+
+void kernel_main(void);
 
 extern char __bss[], __bss_end[];
 extern char __stack_top[];

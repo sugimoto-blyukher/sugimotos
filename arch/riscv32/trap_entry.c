@@ -1,4 +1,4 @@
-#include "kernel/kernel.h"
+#include "kernel/trap.h"
 
 __attribute__((naked))
 __attribute__((aligned(4))) void kernel_entry(void)

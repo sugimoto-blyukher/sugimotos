@@ -1,5 +1,6 @@
-#include "kernel/kernel.h"
 #include "kernel/ext4.h"
+#include "kernel/fs.h"
+#include "kernel/proc.h"
 #include "kernel/syscall.h"
 
 #define RAMFS_MAX_FILES 32

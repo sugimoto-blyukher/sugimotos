@@ -1,6 +1,7 @@
 #include "kernel/virtio_gpu.h"
 #include "kernel/event.h"
-#include "kernel/kernel.h"
+#include "kernel/page_alloc.h"
+#include "kernel/proc.h"
 #include "kernel/waitq.h"
 
 #define VIRTIO_MMIO_BASE 0x10001000

@@ -1,4 +1,4 @@
-#include "kernel/kernel.h"
+#include "kernel/proc.h"
 
 __attribute__((naked)) void switch_context(uint32_t *prev_sp, uint32_t *next_sp)
 {

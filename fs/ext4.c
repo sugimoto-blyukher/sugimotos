@@ -1,6 +1,5 @@
 #include "kernel/ext4.h"
 #include "kernel/blk.h"
-#include "kernel/kernel.h"
 
 #define EXT4_SUPER_MAGIC 0xEF53
 #define EXT4_NDIR_BLOCKS 12

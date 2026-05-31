@@ -2,10 +2,12 @@
 
 #include "kernel/syscall.h"
 #include "kernel/event.h"
+#include "kernel/fs.h"
+#include "kernel/proc.h"
+#include "kernel/sbi.h"
 #include "kernel/virtio_input.h"
 #include "kernel/wm.h"
-#include "kernel/kernel.h"
-#include "../../include/common.h"
+#include "common.h"
 #include "kernel/virtio_gpu.h"
 
 #define SHELL_MAX_LINE 128

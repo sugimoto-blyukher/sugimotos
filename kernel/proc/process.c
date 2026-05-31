@@ -1,5 +1,8 @@
-#include "kernel/kernel.h"
+#include "kernel/fs.h"
+#include "kernel/page_alloc.h"
+#include "kernel/proc.h"
 #include "kernel/syscall.h"
+#include "kernel/vm.h"
 
 #define USER_STACK_PAGES 2
 #define USER_STACK_TOP 0x40000000u

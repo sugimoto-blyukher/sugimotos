@@ -1,6 +1,6 @@
-#include "../include/kernel/event.h"
-#include "../include/kernel/kernel.h"
-#include "../include/kernel/lock.h"
+#include "kernel/event.h"
+#include "kernel/lock.h"
+#include "kernel/proc.h"
 
 #define KEVENT_Q_CAP 128
 

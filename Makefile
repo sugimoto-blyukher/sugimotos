@@ -21,13 +21,14 @@ CFLAGS := \
 	-fno-stack-protector \
 	-ffreestanding \
 	-nostdlib \
-	-Iinclude
+	-Iarch/riscv32/include \
+	-Ikernel/include
 
 LDFLAGS := \
 	-Wl,-T$(LINKER_SCRIPT) \
 	-Wl,-Map=$(MAP)
 
-SRCS := $(shell find kernel lib -name "*.c")
+SRCS := $(shell find arch/riscv32 drivers fs kernel lib -name "*.c")
 
 QEMUFLAGS := \
 	-machine virt \

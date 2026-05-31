@@ -1,6 +1,6 @@
 #include "kernel/blk.h"
-#include "kernel/kernel.h"
 #include "kernel/lock.h"
+#include "kernel/proc.h"
 #include "kernel/waitq.h"
 
 #define VIRTIO_MMIO_BASE 0x10001000

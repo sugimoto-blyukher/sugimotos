@@ -1,4 +1,6 @@
-#include "kernel/kernel.h"
+#include "kernel/page_alloc.h"
+#include "kernel/proc.h"
+#include "kernel/vm.h"
 
 #define SATP_MODE_SV32 (1u << 31)
 #define SATP_PPN_MASK 0x003fffffu

@@ -1,4 +1,5 @@
-#include "kernel/kernel.h"
+#include "kernel/proc.h"
+#include "kernel/vm.h"
 
 static int is_schedulable(const struct process *proc)
 {

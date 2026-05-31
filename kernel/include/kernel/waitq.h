@@ -1,7 +1,7 @@
 #pragma once
 
-#include "kernel/kernel.h"
 #include "kernel/lock.h"
+#include "kernel/proc.h"
 
 struct waitq {
     struct process *waiters[PROC_MAX];

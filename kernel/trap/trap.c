@@ -1,6 +1,9 @@
 #include "kernel/syscall.h"
+#include "arch/csr.h"
 #include "kernel/plic.h"
 #include "kernel/blk.h"
+#include "kernel/proc.h"
+#include "kernel/sbi.h"
 #include "kernel/virtio_gpu.h"
 #include "kernel/virtio_input.h"
 

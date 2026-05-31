@@ -1,5 +1,6 @@
-#include "kernel/kernel.h"
 #include "kernel/lock.h"
+#include "kernel/page_alloc.h"
+#include "kernel/panic.h"
 
 extern char __free_ram[], __free_ram_end[];
 
