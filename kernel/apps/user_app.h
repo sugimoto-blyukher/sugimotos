@@ -25,7 +25,8 @@
 #define FM_STATUS_MAX 96
 #define FILE_DB_MAX 64
 
-#define USER_INIT_AUTOSTART_GUI 1
+#define USER_GUI_ENABLED 0
+#define USER_INIT_AUTOSTART_GUI USER_GUI_ENABLED
 
 struct shell_history {
     int count;

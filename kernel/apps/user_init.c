@@ -10,8 +10,10 @@ struct shell_history g_hist;
 struct file_manager g_fm;
 char g_file_db[FILE_DB_MAX][FM_NAME_MAX];
 int g_file_db_count;
+#if USER_GUI_ENABLED
 char g_term_view[WM_TEXT_MAX];
 int g_term_view_len;
+#endif
 
 char g_input_q[16];
 int g_input_q_head;
@@ -143,7 +145,7 @@ int u_event_poll(struct sys_event *ev)
 }
 
 void u_puts(const char *s) { while (*s) u_putchar(*s++); }
-
+#if USER_GUI_ENABLED
 static void term_view_sync(void) { if (g_main_win > 0) u_wm_set_text(g_main_win, g_term_view); }
 static void term_view_append_char(char c) {
     if (g_term_view_len + 1 >= WM_TEXT_MAX) return;
@@ -156,7 +158,7 @@ static void term_view_backspace(void) {
     if (g_term_view[g_term_view_len - 1] == '\n') return;
     g_term_view_len--; g_term_view[g_term_view_len] = '\0';
 }
-#if USER_INIT_AUTOSTART_GUI
+
 static void term_view_reset(void) {
     g_term_view_len = 0; g_term_view[0] = '\0';
     term_view_append("kernel:shell integrated (S-mode)\n");
@@ -166,7 +168,11 @@ static void term_view_reset(void) {
 #endif
 
 void shell_help(void) {
-    u_puts("commands: help, ls, cat, touch, write, rm, gui, img, fm, shutdown\n");
+    u_puts("commands: help, ls, cat, touch, write, rm");
+#if USER_GUI_ENABLED
+    u_puts(", gui, img, fm");
+#endif
+    u_puts(", shutdown\n");
 }
 
 void shell_touch(const char *path) {
@@ -221,23 +227,34 @@ void shell_write(const char *path, int argc, char **argv) {
 }
 
 void shell_fm(void) {
+#if USER_GUI_ENABLED
     fm_run();
+#else
+    u_puts("fm: GUI disabled\n");
+#endif
 }
 
 void shell_img(const char *path) {
+#if USER_GUI_ENABLED
     if (img_open_path(path) < 0)
         u_puts("img: fail\n");
+#else
+    (void)path;
+    u_puts("img: GUI disabled\n");
+#endif
 }
 
 void user_init_entry(void)
 {
     u_puts("kernel:starting shell...\n");
     g_input_q_head = 0; g_input_q_tail = 0; g_input_shift = 0;
+#if USER_GUI_ENABLED
     printf("shell: calling wm_init...\n");
     wm_init();
     printf("shell: calling wm_input_init...\n");
     wm_input_init();
     g_term_view_len = 0; g_term_view[0] = '\0';
+#endif
     history_init(&g_hist);
     g_file_db_count = 0;
     //filedb_add("/ext_hello.txt");
@@ -260,7 +277,10 @@ void user_init_entry(void)
         int ch = u_getchar();
         if (ch < 0) { u_yield(); continue; }
         if (ch == '\r' || ch == '\n') {
-            u_putchar('\n'); term_view_append("\n");
+            u_putchar('\n');
+#if USER_GUI_ENABLED
+            term_view_append("\n");
+#endif
             g_line[len] = '\0';
             char *argv[SHELL_MAX_ARGS];
             int argc = split_args(g_line, argv, SHELL_MAX_ARGS);
@@ -269,31 +289,45 @@ void user_init_entry(void)
                 else if (str_eq(argv[0], "ls")) shell_ls();
                 else if (str_eq(argv[0], "cat")) { if (argc > 1) shell_cat(argv[1]); else u_puts("usage: cat <path>\n"); }
                 else if (str_eq(argv[0], "touch")) { if (argc > 1) shell_touch(argv[1]); else u_puts("usage: touch <path>\n"); }
+#if USER_GUI_ENABLED
                 else if (str_eq(argv[0], "gui")) {
                     if (g_main_win <= 0) g_main_win = u_wm_create("terminal", 520, 300);
                     u_wm_render();
                 }
+#endif
                 else if (str_eq(argv[0], "write")) {
                     if (argc > 2) shell_write(argv[1], argc, argv);
                     else u_puts("usage: write <path> <text>\n");
                 }
+#if USER_GUI_ENABLED
                 else if (str_eq(argv[0], "img")) { if (argc > 1) shell_img(argv[1]); else u_puts("usage: img <path>\n"); }
                 else if (str_eq(argv[0], "fm")) shell_fm();
+#endif
                 else if (str_eq(argv[0], "rm")) { if (argc > 1) shell_rm(argv[1]); else u_puts("usage: rm <path>\n"); }
                 else if (str_eq(argv[0], "shutdown")) u_shutdown();
                 else u_puts("unknown command\n");
             }
-            len = 0; u_puts("k> "); term_view_append("k> "); term_view_sync();
+            len = 0; u_puts("kernel> ");
+#if USER_GUI_ENABLED
+            term_view_append("k> "); term_view_sync();
+#endif
             continue;
         }
         if (ch == 8 || ch == 127) {
-            if (len > 0) { len--; u_puts("\b \b"); term_view_backspace(); term_view_sync(); }
+            if (len > 0) {
+                len--; u_puts("\b \b");
+#if USER_GUI_ENABLED
+                term_view_backspace(); term_view_sync();
+#endif
+            }
             continue;
         }
         if (ch >= 32 && ch <= 126) {
             if (len + 1 < SHELL_MAX_LINE) {
                 g_line[len++] = (char) ch; u_putchar((char) ch);
+#if USER_GUI_ENABLED
                 term_view_append_char((char) ch); term_view_sync();
+#endif
             }
         }
     }

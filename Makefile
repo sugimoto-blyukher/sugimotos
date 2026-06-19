@@ -34,14 +34,10 @@ QEMUFLAGS := \
 	-machine virt \
 	-bios opensbi-riscv32-generic-fw_dynamic.bin \
 	-kernel $(TARGET) \
-	-serial stdio \
 	-drive if=none,format=raw,file=fs.ext4,id=hd0 \
 	-device virtio-blk-device,drive=hd0 \
-	-device virtio-gpu-device \
-	-device virtio-keyboard-device \
-	-device virtio-mouse-device \
 	-global virtio-mmio.force-legacy=false \
-	-display sdl
+	-nographic
 
 .PHONY: all build run clean debug print-sources
 

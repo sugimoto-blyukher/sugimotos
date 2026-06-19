@@ -1,6 +1,7 @@
 #include "user_app.h"
 
 void fm_run(void) {
+#if USER_GUI_ENABLED
     if (g_fm.active) {
         if (u_wm_focus(g_fm.win_id) >= 0) return;
     }
@@ -8,6 +9,9 @@ void fm_run(void) {
     g_fm.win_id = u_wm_create("FileManager", 400, 300);
     u_wm_set_text(g_fm.win_id, "File Manager (Direct Kernel Access)\nClick to select files.");
     u_wm_render();
+#else
+    u_puts("fm: GUI disabled\n");
+#endif
 }
 
 void filedb_add(const char *path) {
