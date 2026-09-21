@@ -34,4 +34,19 @@ struct trap_frame {
     uint32_t s10;
     uint32_t s11;
     uint32_t sp;
-} __attribute__((packed));
+    uint32_t sepc;
+    uint32_t sstatus;
+} __attribute__((aligned(16)));
+
+// Install the trap vector and keep interrupts disabled during boot.
+void arch_trap_init(void);
+// Enable supervisor external interrupts once the PLIC and scheduler are ready.
+void arch_trap_enable_interrupts(void);
+
+void kernel_entry(void);
+void handle_trap(struct trap_frame *f);
+void arch_handle_ecall(struct trap_frame *f);
+
+extern volatile uint32_t g_last_user_scause;
+extern volatile uint32_t g_last_user_stval;
+extern volatile uint32_t g_last_user_sepc;

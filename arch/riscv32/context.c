@@ -3,7 +3,8 @@
 __attribute__((naked)) void switch_context(uint32_t *prev_sp, uint32_t *next_sp)
 {
     __asm__ __volatile__(
-        "addi sp, sp, -13 * 4\n"
+        "csrrci t0, sstatus, 2\n"
+        "addi sp, sp, -16 * 4\n"
         "sw ra,  0  * 4(sp)\n"
         "sw s0,  1  * 4(sp)\n"
         "sw s1,  2  * 4(sp)\n"
@@ -17,8 +18,11 @@ __attribute__((naked)) void switch_context(uint32_t *prev_sp, uint32_t *next_sp)
         "sw s9,  10 * 4(sp)\n"
         "sw s10, 11 * 4(sp)\n"
         "sw s11, 12 * 4(sp)\n"
+        "sw t0,  13 * 4(sp)\n"
         "sw sp, (a0)\n"
         "lw sp, (a1)\n"
+        "lw t0,  13 * 4(sp)\n"
+        "csrw sstatus, t0\n"
         "lw ra,  0  * 4(sp)\n"
         "lw s0,  1  * 4(sp)\n"
         "lw s1,  2  * 4(sp)\n"
@@ -32,6 +36,6 @@ __attribute__((naked)) void switch_context(uint32_t *prev_sp, uint32_t *next_sp)
         "lw s9,  10 * 4(sp)\n"
         "lw s10, 11 * 4(sp)\n"
         "lw s11, 12 * 4(sp)\n"
-        "addi sp, sp, 13 * 4\n"
+        "addi sp, sp, 16 * 4\n"
         "ret\n");
 }

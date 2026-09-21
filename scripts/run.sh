@@ -7,7 +7,7 @@ CFLAGS="-std=c11 -O2 -g3 -Wall -Wextra --target=riscv32-unknown-elf -fuse-ld=lld
 
 # Build the kernel
 $CC $CFLAGS -Wl,-Tarch/riscv32/kernel.ld -Wl,-Map=kernel.map -o kernel.elf \
-    $(find arch/riscv32 drivers fs kernel lib -name "*.c")
+    $(find arch/riscv32 drivers fs mm kernel lib -name "*.c")
 
 # Run QEMU
 $QEMU -machine virt -bios opensbi-riscv32-generic-fw_dynamic.bin -kernel kernel.elf -serial stdio \

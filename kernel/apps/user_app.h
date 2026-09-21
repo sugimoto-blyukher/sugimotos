@@ -1,6 +1,7 @@
 #pragma once
 
-#include "kernel/syscall.h"
+#include "uapi/event.h"
+#include "uapi/fs.h"
 #include "kernel/event.h"
 #include "kernel/fs.h"
 #include "kernel/proc.h"

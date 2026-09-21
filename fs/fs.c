@@ -1,7 +1,7 @@
 #include "kernel/ext4.h"
 #include "kernel/fs.h"
 #include "kernel/proc.h"
-#include "kernel/syscall.h"
+#include "uapi/fs.h"
 
 #define RAMFS_MAX_FILES 32
 #define RAMFS_NAME_MAX 32

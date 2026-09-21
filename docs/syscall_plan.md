@@ -1,54 +1,69 @@
-# syscall 分割設計
+# trap・syscall・実処理の責務
 
-## Summary
+```text
+U-mode ecall
+  → arch/riscv32/trap/entry.c     レジスタ・sepc・sstatusを保存
+  → arch/riscv32/trap/trap.c      例外・割り込みの種別を判定
+  → arch/riscv32/trap/syscall.c   a7とa0〜a5を番号・引数へ変換
+  → kernel/syscall/syscall.c     syscall番号で振り分け
+  → kernel/syscall/sys_*.c       引数検証・ユーザーバッファ変換
+  → fs/・mm/・kernel/process/    各サブシステムの実処理
+  ← arch/riscv32/trap/           a0・復帰PCを設定し、sret
+```
 
-`syscall.c` を dispatcher に絞り、実処理は `kernel/syscall/sys_*.c` に機能別分割する。内部 handler 宣言は `kernel/syscall/syscall_internal.h` に集約し、外部公開ヘッダとは分離する。
+## arch側
 
-## Key Changes
+`struct trap_frame`とCSR操作はarch側が扱う。ecallのPC更新、SUMの設定、
+戻り値をa0に書き込む処理もここに置く。trap frameにはsepcとsstatusを含め、
+ユーザーメモリへのコピー中にページフォルトが発生しても、元の復帰状態を保持する。
 
-- `kernel/include/kernel/syscall.h`
-  - `handle_syscall(struct trap_frame *, uint32_t)` だけを公開する。
-  - syscall番号やユーザー共有structは置かない。
+`arch/riscv32/process.c`はプロセスの初期レジスタとfork時のレジスタ複製を扱う。
+`trap/resume.c`が新しいユーザープロセスの実行を開始する。
 
-- `kernel/include/uapi/*.h`
-  - syscall番号、`O_*`, `MAP_*`, event/gpu/wm 共有structを置く。
-  - ユーザー側とカーネル側で共有してよい ABI 定義だけに限定する。
+## syscall側
 
-- `kernel/syscall/syscall_internal.h`
-  - `sys_*` handler の宣言だけを置く。
-  - `kernel/syscall/syscall.c` と `sys_*.c` からだけ include する。
-  - `fs_open()` や `proc_exit()` などのカーネル本体APIはここへ移さない。
+公開APIは次のとおり。RISC-Vのtrap frameやCSRを引数に含めない。
 
-- `kernel/syscall/syscall.c`
-  - `f->a7` の syscall番号を見て `sys_*` を呼ぶ dispatcher にする。
-  - 引数の取り出しと戻り値設定だけを担当する。
-  - user pointer validation や具体処理は原則 `sys_*.c` 側へ寄せる。
+```c
+struct syscall_result syscall_dispatch(uint32_t number, const uint32_t args[6]);
+```
 
-- `kernel/syscall/sys_*.c`
-  - 機能別に分ける。
-  - `sys_fs.c`: open/close/read/write/unlink/rename/listdir
-  - `sys_proc.c`: yield/exit/fork/exec/wait/waitpid
-  - `sys_vm.c`: mmap/munmap
-  - `sys_device.c`: gpu/input/event/wmctl/console
+通常の結果は`value`で返す。exec成功時だけ`context_replaced`を立て、arch側に
+プロセスの新しい実行状態を復元させる。execのargcを通常の戻り値で上書きしない。
 
-## Fixes Included
+- `sys_fs.c`: パスのコピーとバッファの検証を行い、`fs_*`へ渡す。
+- `sys_proc.c`: `proc_fork/exec/exit/waitpid`とschedulerへ接続する。
+- `sys_vm.c`: `proc_mmap/munmap`へ接続する。
+- `sys_device.c`: console、GPU、eventのAPIへ接続する。
+- `syscall_internal.h`: dispatcherとhandler間の内部宣言。
 
-- 壊れている `kernel/syscall/sys_proc.c` を完成させる。
-- `kernel/include/uapi/event.h` の `struct sys_event` 末尾セミコロン漏れを直す。
-- `syscall.c` の switch が `uapi/syscall.h` の全 syscall 番号を扱うようにする。
-- 未実装 syscall は `-1` を返す stub にするか、既存実装へ接続する。
+番号や共有データ形式は`kernel/include/uapi/`に置く。今回の分割では、作業中の
+`uapi/syscall.h`の番号を維持する。旧一体型syscall.hの番号との互換性は持たない。
+`sys_event`は既存event queueとアプリが使うtype/a/b/c/d/seq形式にそろえる。
+typeは`EVENT_INPUT`または`EVENT_GPU_IRQ`で、キー・マウスの詳細はa/b/cに入る。
+`SYS_WMCTL`は引数ABIが未定義のため、引き続き-1を返す。
+GPU情報のframebufferはユーザーマッピング未実装のため0を返す。
 
-## Test Plan
+## 実処理
 
-- `make clean`
-- `make build`
-- `rg "SYS_" kernel/include/uapi kernel/syscall` で、定義済み syscall が dispatcher に存在することを確認。
-- `rg "sys_.*\\(" kernel/syscall` で、`syscall_internal.h` の宣言と実装の対応を確認。
-- 可能なら QEMU 起動で shell 初期化、簡単な file read/write、yield/exit 経路を確認。
+- `fs/fs.c`, `fs/ext4.c`: ファイル、FD、ファイルシステム処理。
+- `mm/page_alloc.c`, `mm/vm.c`: 物理ページ、ページテーブル。
+- `mm/process_vm.c`: VMA、mmap、munmap、COW、ページフォルト、アドレス検証。
+- `mm/usercopy.c`: ユーザー領域とのコピー。呼び出し中のSUM管理はarch側が担当する。
+- `kernel/process/`: プロセス生成・終了・fork・exec・wait・スケジューリング。
 
-## Assumptions
+実処理はsyscall番号を解釈しない。ページフォルト原因もarch側でread/write/executeの
+アクセス種別へ変換してからmmへ渡す。
 
-- 分割粒度は「機能別」を採用する。
-- `kernel/syscall/syscall_internal.h` は公開APIではなく syscall subsystem 内部用とする。
-- `kernel/include/uapi/` はユーザー/カーネル共有ABI置き場として維持する。
-- `kernel/include/kernel/*.h` はカーネル内部サブシステムの公開API置き場として維持する。
+## 検証
+
+```sh
+make build
+python3 scripts/test_syscalls.py
+```
+
+テストは一時ディレクトリに専用kernelを作り、QEMUのU-modeからecallを実行する。
+通常のkernel.elfとディスクイメージは変更しない。未知番号、レジスタ保存、yield、
+無効ポインタ、ファイル操作、mmap先へのコピー中のページフォルト、fork、exec、
+waitpidを確認する。Python 3、clang/lld、qemu-system-riscv32が必要。
+通常のシェルはS-modeでカーネルAPIを直接呼ぶため、このテストでsyscall経路を別途確認する。

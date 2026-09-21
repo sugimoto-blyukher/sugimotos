@@ -1,7 +1,5 @@
 # Sugimotos
 
-AI支援を使いつつ、現在は各機能の動作原理を再読解・再実装中。
-
 RISC-V 32bit 向けの自作 OS / モノリシックカーネルです。
 QEMU の `virt` マシン上で OpenSBI 経由で起動し、virtio-blk / virtio-gpu / virtio-keyboard / virtio-mouse を使います。
 
@@ -25,22 +23,12 @@ sudo apt install clang lld qemu-system-misc qemu-system-gui
 
 ## ビルド方法
 
-通常は `run.sh` がビルドと起動をまとめて行います。
+通常は `scripts/run.sh` がビルドと起動をまとめて行います。
 
 ビルドだけ確認したい場合は、以下を実行してください。
 
 ```sh
-clang -std=c11 -O2 -g3 -Wall -Wextra \
-  --target=riscv32-unknown-elf \
-  -fuse-ld=lld \
-  -fno-stack-protector \
-  -ffreestanding \
-  -nostdlib \
-  -Iinclude \
-  -Wl,-Tkernel/arch/riscv32/kernel.ld \
-  -Wl,-Map=kernel.map \
-  -o kernel.elf \
-  $(find kernel lib -name "*.c")
+make build
 ```
 
 生成される主なファイルは次の通りです。
@@ -51,7 +39,7 @@ clang -std=c11 -O2 -g3 -Wall -Wextra \
 ## 起動方法
 
 ```sh
-./run.sh
+./scripts/run.sh
 ```
 
 `run.sh` は内部で次の処理を行います。
@@ -93,6 +81,7 @@ qemu-system-riscv32 \
 
 ## 関連ドキュメント
 
+- `docs/syscall_plan.md`: trap・syscall・各サブシステムの責務と統合テスト
 - `docs/overview.md`: 起動から実行までの概要
 - `docs/architecture.md`: ディレクトリ構成
 - `docs/GPU-driver.md`: virtio-gpu ドライバの説明

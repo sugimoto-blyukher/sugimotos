@@ -1,4 +1,4 @@
-#include "kernel/syscall.h"
+#include "arch/trap.h"
 #include "arch/csr.h"
 #include "kernel/plic.h"
 #include "kernel/blk.h"
@@ -15,20 +15,40 @@
 #define SCAUSE_LOAD_PAGE_FAULT 13
 #define SCAUSE_STORE_PAGE_FAULT 15
 
-static int g_user_trap_reporting;
+#define SSTATUS_SIE (1u << 1)
+#define SIE_SEIE (1u << 9)
+
 volatile uint32_t g_last_user_scause;
 volatile uint32_t g_last_user_stval;
 volatile uint32_t g_last_user_sepc;
+
+void arch_trap_init(void)
+{
+    WRITE_CSR(stvec, (uint32_t) kernel_entry);
+    WRITE_CSR(sscratch, 0);
+    WRITE_CSR(sie, 0);
+    WRITE_CSR(sstatus, READ_CSR(sstatus) & ~SSTATUS_SIE);
+}
+
+void arch_trap_enable_interrupts(void)
+{
+    WRITE_CSR(sie, SIE_SEIE);
+    WRITE_CSR(sstatus, READ_CSR(sstatus) | SSTATUS_SIE);
+}
 
 static int is_syscall_scause(uint32_t scause)
 {
     return scause == SCAUSE_ECALL_FROM_UMODE || scause == SCAUSE_ECALL_FROM_SMODE;
 }
 
-static int is_user_page_fault_scause(uint32_t scause)
+static uint32_t page_fault_access(uint32_t scause)
 {
-    return scause == SCAUSE_INST_PAGE_FAULT || scause == SCAUSE_LOAD_PAGE_FAULT ||
-           scause == SCAUSE_STORE_PAGE_FAULT;
+    switch (scause) {
+        case SCAUSE_INST_PAGE_FAULT: return VMA_PROT_X;
+        case SCAUSE_LOAD_PAGE_FAULT: return VMA_PROT_R;
+        case SCAUSE_STORE_PAGE_FAULT: return VMA_PROT_W;
+        default: return 0;
+    }
 }
 
 static const char *scause_name(uint32_t scause)
@@ -146,19 +166,20 @@ void handle_trap(struct trap_frame *f)
 {
     uint32_t scause = READ_CSR(scause);
     uint32_t stval = READ_CSR(stval);
-    uint32_t user_pc = READ_CSR(sepc);
+    uint32_t user_pc = f->sepc;
 
     if (scause == SCAUSE_SUPERVISOR_EXTERNAL_IRQ) {
         handle_external_interrupt();
         return;
     }
     if (is_syscall_scause(scause)) {
-        handle_syscall(f, user_pc);
+        arch_handle_ecall(f);
         return;
     }
 
-    if (current_proc && current_proc->is_user && is_user_page_fault_scause(scause)) {
-        if (proc_handle_user_page_fault(stval, scause) == 0)
+    uint32_t access = page_fault_access(scause);
+    if (current_proc && current_proc->is_user && access != 0) {
+        if (proc_handle_user_page_fault(stval, access) == 0)
             return;
     }
 
@@ -166,7 +187,6 @@ void handle_trap(struct trap_frame *f)
         g_last_user_scause = scause;
         g_last_user_stval = stval;
         g_last_user_sepc = user_pc;
-        (void) g_user_trap_reporting;
         dump_trap_context(scause, stval, user_pc, f);
         proc_exit(128);
         return;

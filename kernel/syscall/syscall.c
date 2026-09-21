@@ -1,256 +1,78 @@
 #include "kernel/syscall.h"
-#include "arch/csr.h"
-#include "kernel/event.h"
-#include "kernel/fs.h"
-#include "kernel/proc.h"
-#include "kernel/sbi.h"
-#include "kernel/virtio_gpu.h"
-#include "kernel/virtio_input.h"
+#include "uapi/syscall.h"
+#include "syscall_internal.h"
 
-#define USER_PATH_MAX 96
-#define SSTATUS_SUM (1u << 18)
-
-static int g_gpu_init_done;
-static int g_input_init_done;
-
-static int ensure_gpu_init(void)
+struct syscall_result syscall_dispatch(uint32_t number, const uint32_t args[6])
 {
-    if (!g_gpu_init_done)
-        g_gpu_init_done = (virtio_gpu_init() == 0) ? 1 : -1;
-    return (g_gpu_init_done > 0) ? 0 : -1;
-}
+    int value;
 
-static int ensure_input_init(void)
-{
-    if (!g_input_init_done)
-        g_input_init_done = (virtio_input_init() == 0) ? 1 : -1;
-    return (g_input_init_done > 0) ? 0 : -1;
-}
-
-static void syscall_fail(struct trap_frame *f)
-{
-    f->a0 = (uint32_t) -1;
-}
-
-static int user_writable_or_null(uint32_t addr, uint32_t len)
-{
-    return addr == 0 || proc_user_writable_ok(addr, len);
-}
-
-static int handle_exec_syscall(struct trap_frame *f)
-{
-    uint32_t entry_pc = f->a0;
-    uint32_t argv = f->a1;
-    if (argv != 0 && proc_user_exec_argv_ok(argv, NULL) < 0)
-        return -1;
-    return proc_exec(f, entry_pc, argv);
-}
-
-static int handle_gpu_info_syscall(struct trap_frame *f)
-{
-    if (f->a0 == 0 || !proc_user_writable_ok(f->a0, sizeof(struct sys_gpu_info)))
-        return -1;
-    *(struct sys_gpu_info *) f->a0 = (struct sys_gpu_info){
-        .width = (uint32_t) virtio_gpu_width(),
-        .height = (uint32_t) virtio_gpu_height(),
-        .pitch = (uint32_t) virtio_gpu_pitch(),
-        .ready = (uint32_t) virtio_gpu_is_ready(),
-        .last_error = (uint32_t) virtio_gpu_last_error(),
-    };
-    return 0;
-}
-
-static int handle_gpu_present_syscall(struct trap_frame *f)
-{
-    if (ensure_gpu_init() < 0)
-        return -1;
-
-    uint32_t src = f->a0;
-    uint32_t bytes = f->a1;
-    uint32_t *dst = virtio_gpu_backbuffer();
-    if (!dst || src == 0 || bytes == 0)
-        return -1;
-
-    uint64_t fb_bytes64 = (uint64_t) (uint32_t) virtio_gpu_width() *
-                          (uint64_t) (uint32_t) virtio_gpu_height() * sizeof(uint32_t);
-    uint32_t fb_bytes = (fb_bytes64 > 0xffffffffu) ? 0xffffffffu : (uint32_t) fb_bytes64;
-    if (bytes > fb_bytes)
-        bytes = fb_bytes;
-    if (!proc_user_readable_ok(src, bytes))
-        return -1;
-
-    memcpy(dst, (const void *) src, bytes);
-    virtio_gpu_present();
-    return 0;
-}
-
-static int handle_input_next_event_syscall(struct trap_frame *f)
-{
-    if (f->a0 == 0 || !proc_user_writable_ok(f->a0, sizeof(struct virtio_input_event)))
-        return -1;
-    if (ensure_input_init() < 0)
-        return -1;
-    return virtio_input_next_event((struct virtio_input_event *) f->a0);
-}
-
-static int handle_event_poll_syscall(struct trap_frame *f)
-{
-    if (f->a0 == 0 || !proc_user_writable_ok(f->a0, sizeof(struct sys_event)))
-        return -1;
-
-    struct k_event kev;
-    int rc = kevent_pop(&kev);
-    if (rc <= 0)
-        return rc;
-
-    *(struct sys_event *) f->a0 = (struct sys_event){
-        .type = kev.type,
-        .a = kev.a,
-        .b = kev.b,
-        .c = kev.c,
-        .d = kev.d,
-        .seq = kev.seq,
-    };
-    return 1;
-}
-
-static void shutdown_forever(void)
-{
-    sbi_shutdown();
-    for (;;)
-        __asm__ __volatile__("wfi");
-}
-
-void handle_syscall(struct trap_frame *f, uint32_t user_pc)
-{
-    uint32_t next_pc = user_pc + 4;
-    uint32_t sstatus_saved = READ_CSR(sstatus);
-    if (current_proc && current_proc->is_user)
-        WRITE_CSR(sstatus, sstatus_saved | SSTATUS_SUM);
-
-    switch (f->a7) {
+    switch (number) {
         case SYS_PUTCHAR:
-            putchar((char) f->a0);
-            f->a0 = 0;
-            break;
-        case SYS_YIELD:
-            yield();
-            f->a0 = 0;
-            break;
-        case SYS_FORK:
-            f->a0 = proc_fork(f, user_pc);
-            break;
-        case SYS_EXIT:
-            proc_exit((int) f->a0);
-            f->a0 = 0;
-            break;
-        case SYS_WAIT:
-            if (!user_writable_or_null(f->a0, sizeof(int))) {
-                syscall_fail(f);
-                break;
-            }
-            f->a0 = proc_wait((int *) f->a0);
-            break;
-        case SYS_EXEC: {
-            int ret = handle_exec_syscall(f);
-            if (ret == 0) {
-                next_pc = current_proc->sepc;
-            } else {
-                f->a0 = (uint32_t) ret;
-            }
-            break;
-        }
-        case SYS_WAITPID:
-            if (!user_writable_or_null(f->a1, sizeof(int))) {
-                syscall_fail(f);
-                break;
-            }
-            f->a0 = proc_waitpid((int) f->a0, (int *) f->a1, (int) f->a2);
+            value = sys_putchar((int) args[0]);
             break;
         case SYS_GETCHAR:
-            f->a0 = (uint32_t) getchar();
+            value = sys_getchar();
+            break;
+        case SYS_YIELD:
+            value = sys_yield();
+            break;
+        case SYS_EXIT:
+            value = sys_exit((int) args[0]);
+            break;
+        case SYS_FORK:
+            value = sys_fork();
+            break;
+        case SYS_WAIT:
+            value = sys_wait(args[0]);
+            break;
+        case SYS_WAITPID:
+            value = sys_waitpid((int) args[0], args[1], (int) args[2]);
             break;
         case SYS_OPEN:
-            if (!proc_user_cstr_ok(f->a0, USER_PATH_MAX)) {
-                syscall_fail(f);
-                break;
-            }
-            f->a0 = (uint32_t) fs_open((const char *) f->a0, (int) f->a1);
+            value = sys_open(args[0], (int) args[1]);
             break;
         case SYS_CLOSE:
-            f->a0 = (uint32_t) fs_close((int) f->a0);
+            value = sys_close((int) args[0]);
             break;
         case SYS_READ:
-            if (f->a2 != 0 && !proc_user_writable_ok(f->a1, f->a2)) {
-                syscall_fail(f);
-                break;
-            }
-            f->a0 = (uint32_t) fs_read((int) f->a0, (void *) f->a1, f->a2);
+            value = sys_read((int) args[0], args[1], args[2]);
             break;
         case SYS_WRITE:
-            if (f->a2 != 0 && !proc_user_readable_ok(f->a1, f->a2)) {
-                syscall_fail(f);
-                break;
-            }
-            f->a0 = (uint32_t) fs_write((int) f->a0, (const void *) f->a1, f->a2);
+            value = sys_write((int) args[0], args[1], args[2]);
             break;
         case SYS_UNLINK:
-            if (!proc_user_cstr_ok(f->a0, USER_PATH_MAX)) {
-                syscall_fail(f);
-                break;
-            }
-            f->a0 = (uint32_t) fs_unlink((const char *) f->a0);
-            break;
-        case SYS_LISTDIR:
-            if (f->a1 != 0 && !proc_user_writable_ok((uint32_t) f->a0, f->a1)) {
-                syscall_fail(f);
-                break;
-            }
-            f->a0 = (uint32_t) fs_listdir((char *) f->a0, f->a1);
+            value = sys_unlink(args[0]);
             break;
         case SYS_RENAME:
-            if (!proc_user_cstr_ok(f->a0, USER_PATH_MAX) ||
-                !proc_user_cstr_ok(f->a1, USER_PATH_MAX)) {
-                syscall_fail(f);
-                break;
-            }
-            f->a0 = (uint32_t) fs_rename((const char *) f->a0, (const char *) f->a1);
+            value = sys_rename(args[0], args[1]);
+            break;
+        case SYS_LISTDIR:
+            value = sys_listdir(args[0], args[1]);
             break;
         case SYS_MMAP:
-            f->a0 = (uint32_t) proc_mmap(f->a0, f->a1, f->a2, f->a3);
+            value = sys_mmap(args[0], args[1], args[2], args[3]);
             break;
         case SYS_MUNMAP:
-            f->a0 = (uint32_t) proc_munmap(f->a0, f->a1);
-            break;
-        case SYS_GPU_INIT:
-            f->a0 = (uint32_t) ensure_gpu_init();
+            value = sys_munmap(args[0], args[1]);
             break;
         case SYS_GPU_INFO:
-            f->a0 = (uint32_t) handle_gpu_info_syscall(f);
+            value = sys_gpu_info(args[0]);
             break;
-        case SYS_GPU_PRESENT:
-            f->a0 = (uint32_t) handle_gpu_present_syscall(f);
+        case SYS_GPU_FLUSH:
+            value = sys_gpu_flush();
             break;
-        case SYS_INPUT_INIT:
-            f->a0 = (uint32_t) ensure_input_init();
-            break;
-        case SYS_INPUT_NEXT_EVENT:
-            f->a0 = (uint32_t) handle_input_next_event_syscall(f);
-            break;
-        case SYS_EVENT_POLL:
-            f->a0 = (uint32_t) handle_event_poll_syscall(f);
-            break;
-        case SYS_SHUTDOWN:
-            shutdown_forever();
+        case SYS_GET_EVENT:
+            value = sys_get_event(args[0]);
             break;
         case SYS_WMCTL:
-            syscall_fail(f);
+            value = sys_wmctl((int) args[0], args[1]);
             break;
+        case SYS_EXEC:
+            value = sys_exec(args[0], args[1]);
+            return (struct syscall_result){value, value == 0};
         default:
-            syscall_fail(f);
+            value = -1;
             break;
     }
-
-    WRITE_CSR(sstatus, sstatus_saved);
-    WRITE_CSR(sepc, next_pc);
+    return (struct syscall_result){value, false};
 }

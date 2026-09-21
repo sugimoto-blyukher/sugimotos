@@ -28,7 +28,8 @@ LDFLAGS := \
 	-Wl,-T$(LINKER_SCRIPT) \
 	-Wl,-Map=$(MAP)
 
-SRCS := $(shell find arch/riscv32 drivers fs kernel lib -name "*.c")
+SRCS := $(shell find arch/$(ARCH) drivers fs mm kernel lib -name "*.c")
+HEADERS := $(shell find arch/$(ARCH)/include kernel/include kernel/syscall kernel/apps -name "*.h")
 
 QEMUFLAGS := \
 	-machine virt \
@@ -49,7 +50,7 @@ all: build
 
 build: $(TARGET)
 
-$(TARGET): $(SRCS) $(LINKER_SCRIPT)
+$(TARGET): $(SRCS) $(HEADERS) $(LINKER_SCRIPT)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(SRCS)
 
 run: $(TARGET)

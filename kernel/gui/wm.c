@@ -1,4 +1,3 @@
-#include "kernel/syscall.h"
 #include "kernel/virtio_gpu.h"
 #include "kernel/virtio_input.h"
 #include "kernel/wm.h"
