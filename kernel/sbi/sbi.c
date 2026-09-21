@@ -1,4 +1,4 @@
-#include "kernel/kernel.h"
+#include "kernel/sbi.h"
 
 #define KBDQ_CAP 64
 

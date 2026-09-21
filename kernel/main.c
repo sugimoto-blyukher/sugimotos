@@ -1,13 +1,16 @@
-#include "../include/kernel/kernel.h"
-#include "../include/kernel/event.h"
+#include "arch/trap.h"
+#include "kernel/event.h"
+#include "kernel/fs.h"
+#include "kernel/proc.h"
 #include "kernel/plic.h"
+#include "kernel/sbi.h"
+#include "kernel/vm.h"
+
+void kernel_main(void);
 
 extern char __bss[], __bss_end[];
 extern char __stack_top[];
 extern void user_init_entry(void);
-extern volatile uint32_t g_last_user_scause;
-extern volatile uint32_t g_last_user_stval;
-extern volatile uint32_t g_last_user_sepc;
 
 static void halt_forever(void)
 {
@@ -54,10 +57,7 @@ void kernel_main(void)
     printf(" ____) | |__| | |__| |_| |_| |  | | |__| | | | | |__| |____) |\n");
     printf("|_____/ \\____/ \\_____|_____|_|  |_|\\____/  |_|  \\____/|_____/ \n");
 
-    WRITE_CSR(stvec, (uint32_t)kernel_entry);
-    WRITE_CSR(sscratch, 0);
-    WRITE_CSR(sie, 0);
-    WRITE_CSR(sstatus, READ_CSR(sstatus) & ~0x2u);
+    arch_trap_init();
 
     printf("kernel: initializing events...\n");
     kevent_init();
@@ -74,8 +74,7 @@ void kernel_main(void)
     current_proc = idle_proc;
 
     printf("kernel: enabling interrupts...\n");
-    WRITE_CSR(sie, (1u << 9));                    // SEIE
-    WRITE_CSR(sstatus, READ_CSR(sstatus) | 0x2u); // SIE
+    arch_trap_enable_interrupts();
 
     printf("kernel: initializing fs...\n");
     fs_init();

@@ -1,9 +1,8 @@
-#include "kernel/syscall.h"
 #include "kernel/virtio_gpu.h"
 #include "kernel/virtio_input.h"
 #include "kernel/wm.h"
-#include "kernel/kernel.h"
 #include "kernel/event.h"
+#include "kernel/page_alloc.h"
 
 #define WM_TEXT_SCREEN_W 80
 #define WM_TEXT_SCREEN_H 25

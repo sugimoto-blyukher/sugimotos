@@ -27,4 +27,29 @@
 	// "customizations": {},
 	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
 	// "remoteUser": "root"
-}
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"llvm-vs-code-extensions.vscode-clangd",
+				"vadimcn.vscode-lldb",
+				"ms-vscode.cmake-tools",
+				"ms-vscode.makefile-tools",
+				"ms-azuretools.vscode-docker",
+				"redhat.vscode-yaml",
+				"timonwong.shellcheck",
+				"editorconfig.editorconfig",
+				"usernamehw.errorlens",
+				"gruntfuggly.todo-tree",
+				"ms-vscode.hexeditor"
+			],
+			"settings": {
+				"C_Cpp.intelliSenseEngine": "disabled",
+				"clangd.arguments": [
+					"--background-index",
+					"--clang-tidy",
+					"--completion-style=detailed",
+					"--header-insertion=iwyu"
+				]
+			}
+		}
+	}

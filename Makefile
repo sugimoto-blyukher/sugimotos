@@ -1,0 +1,66 @@
+# Sugimotos Makefile
+# Existing run.sh compatible build system
+
+TARGET := kernel.elf
+MAP    := kernel.map
+
+QEMU := qemu-system-riscv32
+CC   := clang
+
+ARCH := riscv32
+LINKER_SCRIPT := arch/$(ARCH)/kernel.ld
+
+CFLAGS := \
+	-std=c11 \
+	-O2 \
+	-g3 \
+	-Wall \
+	-Wextra \
+	--target=riscv32-unknown-elf \
+	-fuse-ld=lld \
+	-fno-stack-protector \
+	-ffreestanding \
+	-nostdlib \
+	-Iarch/riscv32/include \
+	-Ikernel/include
+
+LDFLAGS := \
+	-Wl,-T$(LINKER_SCRIPT) \
+	-Wl,-Map=$(MAP)
+
+SRCS := $(shell find arch/$(ARCH) drivers fs mm kernel lib -name "*.c")
+HEADERS := $(shell find arch/$(ARCH)/include kernel/include kernel/syscall kernel/apps -name "*.h")
+
+QEMUFLAGS := \
+	-machine virt \
+	-bios opensbi-riscv32-generic-fw_dynamic.bin \
+	-kernel $(TARGET) \
+	-serial stdio \
+	-drive if=none,format=raw,file=fs.ext4,id=hd0 \
+	-device virtio-blk-device,drive=hd0 \
+	-device virtio-gpu-device \
+	-device virtio-keyboard-device \
+	-device virtio-mouse-device \
+	-global virtio-mmio.force-legacy=false \
+	-display sdl
+
+.PHONY: all build run clean debug print-sources
+
+all: build
+
+build: $(TARGET)
+
+$(TARGET): $(SRCS) $(HEADERS) $(LINKER_SCRIPT)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(SRCS)
+
+run: $(TARGET)
+	$(QEMU) $(QEMUFLAGS)
+
+debug: $(TARGET)
+	$(QEMU) $(QEMUFLAGS) -S -s
+
+print-sources:
+	@printf '%s\n' $(SRCS)
+
+clean:
+	rm -f $(TARGET) $(MAP)
